@@ -26,7 +26,21 @@
     <dt>藥品</dt><dd>{{ prescription.medication_name }}</dd>
     <dt>數量</dt><dd>{{ prescription.source_quantity }} {{ prescription.unit }}</dd>
   </dl>
-  <p class="muted">醫師用藥原因將在下一步由正式 Excel 代碼表提供。</p>
+  {% if reason_options %}
+  <form method="post" action="/doctor/save" class="save-form">
+    <input type="hidden" name="source_id" value="{{ prescription.source_id }}">
+    <input type="hidden" name="doctor_id" value="{{ doctor_id or prescription.doctor_id }}">
+    <label>用藥原因
+      <select name="reason_code" required>
+        <option value="">請選擇正式用藥原因</option>
+        {% for option in reason_options %}
+        <option value="{{ option.code }}" {% if (selected_reason_code or (existing_case and existing_case.reason_code)) == option.code %}selected{% endif %}>{{ option.code }} - {{ option.label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <button type="submit">儲存</button>
+  </form>
+  {% endif %}
 </section>
 {% endif %}
 {% endblock %}

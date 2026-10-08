@@ -13,6 +13,8 @@ button { cursor: pointer; background: #165d9c; color: white; border-color: #165d
 button:hover { background: #0e477a; }
 .message { padding: .75rem 1rem; border-radius: 4px; margin-bottom: 1rem; }
 .message.error { background: #fde8e8; color: #8a1c1c; border: 1px solid #f3b4b4; }
+.message.success { background: #e5f5e9; color: #165b2c; border: 1px solid #a9d8b5; }
+.save-form { display: flex; gap: .75rem; align-items: end; flex-wrap: wrap; margin-top: 1rem; }
 dl { display: grid; grid-template-columns: 8rem 1fr; gap: .5rem 1rem; }
 dt { font-weight: 700; }
 dd { margin: 0; }
