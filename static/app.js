@@ -14,6 +14,17 @@
   });
 })();
 
+document.querySelectorAll(".add-lot").forEach((button) => {
+  button.addEventListener("click", () => {
+    const editor = button.closest(".row-form")?.querySelector(".lots-editor");
+    const firstRow = editor?.querySelector(".lot-row");
+    if (!editor || !firstRow) return;
+    const row = firstRow.cloneNode(true);
+    row.querySelectorAll("input").forEach((input) => { input.value = ""; });
+    editor.appendChild(row);
+  });
+});
+
 (() => {
   const operatorInputs = document.querySelectorAll('input[name="operator"]');
   if (!operatorInputs.length) return;

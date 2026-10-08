@@ -31,6 +31,11 @@
       <label>藥品 <input name="medication_id" value="{{ medication_id }}"></label>
       <button type="submit">套用篩選</button>
     </form>
+    <form method="post" action="/pharmacy/batch-lot" id="batch-lot-form" class="batch-form">
+      <label>批次批號 <input name="lot_number" placeholder="同藥品套用"></label>
+      <label>操作人 <input name="operator" autocomplete="off"></label>
+      <button type="submit">套用批次批號</button>
+    </form>
   </div>
 </section>
 
@@ -41,7 +46,7 @@
     <tbody>
     {% for case in cases %}
       <tr>
-        <td><strong>{{ case.patient_name }}</strong><br><span class="muted">{{ case.medical_record_number }} · {{ case.report_date }}</span></td>
+        <td><input type="checkbox" name="case_ids" value="{{ case.id }}" form="batch-lot-form"> <strong>{{ case.patient_name }}</strong><br><span class="muted">{{ case.medical_record_number }} · {{ case.report_date }}</span></td>
         <td>{{ case.medication_name }}<br><span class="muted">來源 {{ case.source_quantity }} {{ "顆" if case.source_quantity != 1 else "顆" }}</span></td>
         <td colspan="3">
           <form method="post" action="/pharmacy/save" class="row-form">
@@ -54,6 +59,7 @@
               {% endfor %}
             </select>
             <input name="actual_quantity" inputmode="numeric" value="{{ case.actual_quantity or '' }}" placeholder="實際數量">
+            <span class="lots-editor">
             {% if case.lots %}
               {% for lot in case.lots %}
               <span class="lot-row"><input name="lot_number" value="{{ lot.lot_number }}" placeholder="批號"><input name="lot_quantity" value="{{ lot.quantity }}" inputmode="numeric" placeholder="批號數量"></span>
@@ -61,6 +67,8 @@
             {% else %}
               <span class="lot-row"><input name="lot_number" placeholder="批號"><input name="lot_quantity" inputmode="numeric" placeholder="批號數量"></span>
             {% endif %}
+            </span>
+            <button type="button" class="link-button add-lot">+ Add another lot</button>
             <button type="submit">儲存</button>
           </form>
         </td>

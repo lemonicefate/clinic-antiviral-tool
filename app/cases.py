@@ -33,6 +33,10 @@ class CaseFieldError(ValueError):
         self.message = message
 
 
+class MixedMedicationBatchError(CaseFieldError):
+    code = "CASE_BATCH_001"
+
+
 def parse_actual_quantity(value: object) -> int | None:
     if value is None or str(value).strip() == "":
         return None

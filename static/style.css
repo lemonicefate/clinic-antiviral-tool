@@ -9,6 +9,7 @@ nav a { color: white; }
 .lookup-form { display: flex; gap: .75rem; align-items: end; flex-wrap: wrap; }
 .toolbar-grid { display: grid; gap: 1rem; }
 .scan-form, .filter-form { display: flex; gap: .75rem; align-items: end; flex-wrap: wrap; }
+.batch-form { display: flex; gap: .75rem; align-items: end; flex-wrap: wrap; }
 .table-panel { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; }
 th, td { padding: .65rem; border-bottom: 1px solid #e2e7eb; text-align: left; vertical-align: top; }

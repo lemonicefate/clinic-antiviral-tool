@@ -14,6 +14,8 @@ from app.cases import (
     MISSING_REASON,
     READY_TO_EXPORT,
     LotAllocation,
+    MixedMedicationBatchError,
+    CaseFieldError,
     derive_state,
     lots_display,
 )
@@ -243,6 +245,56 @@ class Database:
                 changed_at=now,
             )
         return self.get_case(case_id)  # type: ignore[return-value]
+
+    def batch_assign_lot(
+        self,
+        case_ids: Iterable[int],
+        *,
+        lot_number: str,
+        operator: str,
+    ) -> list[CaseRecord]:
+        ids = tuple(dict.fromkeys(int(case_id) for case_id in case_ids))
+        cases = [case for case_id in ids if (case := self.get_case(case_id)) is not None]
+        if not cases or len(cases) != len(ids):
+            raise KeyError("case")
+        if not lot_number.strip():
+            raise CaseFieldError("Enter a lot number before batch assignment.")
+        if len({case.medication_id for case in cases}) != 1:
+            raise MixedMedicationBatchError(
+                "Separate medications before applying one lot to several cases."
+            )
+        if any(case.actual_quantity is None or case.actual_quantity <= 0 for case in cases):
+            raise CaseFieldError("Enter an actual quantity before batch lot assignment.")
+
+        now = _now()
+        with self._connect() as connection:
+            for case in cases:
+                lots = (LotAllocation(lot_number.strip(), case.actual_quantity),)
+                state = derive_state(
+                    reason_code=case.reason_code,
+                    actual_quantity=case.actual_quantity,
+                    lots=lots,
+                    previous_state=case.state,
+                )
+                connection.execute(
+                    "UPDATE cases SET state = ?, updated_at = ? WHERE id = ?",
+                    (state, now, case.id),
+                )
+                connection.execute("DELETE FROM case_lots WHERE case_id = ?", (case.id,))
+                connection.execute(
+                    "INSERT INTO case_lots (case_id, lot_number, quantity, position) VALUES (?, ?, ?, 0)",
+                    (case.id, lot_number.strip(), case.actual_quantity),
+                )
+                _record_change_if_needed(
+                    connection,
+                    case_id=case.id,
+                    field="lot_number",
+                    old_value=lots_display(case.lots) or None,
+                    new_value=lots_display(lots),
+                    operator=operator,
+                    changed_at=now,
+                )
+        return [self.get_case(case.id) for case in cases]  # type: ignore[misc]
 
     def exclude_case(self, case_id: int, exclusion_reason: str) -> CaseRecord:
         existing = self.get_case(case_id)

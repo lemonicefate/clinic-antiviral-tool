@@ -15,6 +15,7 @@ from app.config import Settings
 from app.cases import (
     EXCLUSION_REASONS,
     CaseFieldError,
+    MixedMedicationBatchError,
     parse_actual_quantity,
     parse_lots,
 )
@@ -330,6 +331,30 @@ def create_app(
         except Exception:
             logger.exception("Unexpected pharmacy save failure")
             return render_pharmacy(request, error="The case could not be saved. Error: DB_001")
+
+    @app.post("/pharmacy/batch-lot", response_class=HTMLResponse)
+    def batch_lot(
+        request: Request,
+        case_ids: list[int] = Form(default=[]),
+        lot_number: str = Form(""),
+        operator: str = Form(""),
+    ) -> HTMLResponse:
+        try:
+            database.batch_assign_lot(
+                case_ids,
+                lot_number=lot_number,
+                operator=operator.strip() or "pharmacy",
+            )
+            return RedirectResponse("/pharmacy?message=Batch+lot+applied.", status_code=303)
+        except MixedMedicationBatchError as exc:
+            return render_pharmacy(request, error=f"{exc.message} Error: {exc.code}")
+        except CaseFieldError as exc:
+            return render_pharmacy(request, error=f"{exc.message} Error: {exc.code}")
+        except KeyError:
+            return render_pharmacy(request, error="Choose existing cases before batch assignment. Error: DB_001")
+        except Exception:
+            logger.exception("Unexpected batch lot failure")
+            return render_pharmacy(request, error="The batch lot action failed. Error: DB_001")
 
     @app.post("/pharmacy/exclude", response_class=HTMLResponse)
     def exclude_pharmacy_case(
