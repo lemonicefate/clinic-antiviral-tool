@@ -334,6 +334,118 @@ class Database:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def resolve_his_difference(
+        self,
+        case_id: int,
+        prescription: Prescription | None,
+        *,
+        decision: str,
+        operator: str,
+    ) -> CaseRecord:
+        existing = self.get_case(case_id)
+        if existing is None:
+            raise KeyError(case_id)
+        if decision == "exclude":
+            return self.exclude_case(case_id, "HIS data changed before export")
+        if prescription is None:
+            raise ValueError("The latest HIS order is unavailable.")
+        now = _now()
+        if decision == "keep":
+            with self._connect() as connection:
+                connection.execute(
+                    "UPDATE cases SET source_fingerprint = ?, updated_at = ? WHERE id = ?",
+                    (_fingerprint_json(prescription), now, case_id),
+                )
+            return self.get_case(case_id)  # type: ignore[return-value]
+        if decision != "latest":
+            raise ValueError("Unknown HIS resolution.")
+
+        actual_quantity = existing.actual_quantity
+        lots = existing.lots
+        if actual_quantity == existing.source_quantity:
+            actual_quantity = prescription.source_quantity
+            if len(lots) == 1 and lots[0].quantity == existing.source_quantity:
+                lots = (LotAllocation(lots[0].lot_number, actual_quantity),)
+        state = derive_state(
+            reason_code=existing.reason_code,
+            actual_quantity=actual_quantity,
+            lots=lots,
+            previous_state=existing.state,
+        )
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE cases
+                SET medical_record_number = ?, patient_name = ?, patient_id = ?, birth_date = ?, sex = ?,
+                    report_date = ?, doctor_id = ?, medication_id = ?, medication_name = ?,
+                    official_material = ?, source_quantity = ?, actual_quantity = ?, state = ?,
+                    source_fingerprint = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    prescription.medical_record_number,
+                    prescription.patient_name,
+                    prescription.patient_id,
+                    prescription.birth_date.isoformat() if prescription.birth_date else None,
+                    prescription.sex,
+                    prescription.report_date.isoformat(),
+                    prescription.doctor_id,
+                    prescription.medication_id,
+                    prescription.medication_name,
+                    prescription.official_material,
+                    prescription.source_quantity,
+                    actual_quantity,
+                    state,
+                    _fingerprint_json(prescription),
+                    now,
+                    case_id,
+                ),
+            )
+            connection.execute("DELETE FROM case_lots WHERE case_id = ?", (case_id,))
+            connection.executemany(
+                "INSERT INTO case_lots (case_id, lot_number, quantity, position) VALUES (?, ?, ?, ?)",
+                [(case_id, lot.lot_number, lot.quantity, index) for index, lot in enumerate(lots)],
+            )
+            _record_change_if_needed(
+                connection,
+                case_id=case_id,
+                field="actual_quantity",
+                old_value=str(existing.actual_quantity) if existing.actual_quantity is not None else None,
+                new_value=str(actual_quantity) if actual_quantity is not None else None,
+                operator=operator,
+                changed_at=now,
+            )
+            _record_change_if_needed(
+                connection,
+                case_id=case_id,
+                field="lot_number",
+                old_value=lots_display(existing.lots) or None,
+                new_value=lots_display(lots) or None,
+                operator=operator,
+                changed_at=now,
+            )
+        return self.get_case(case_id)  # type: ignore[return-value]
+
+    def create_export_batch(self, filename: str, operator: str, case_ids: Iterable[int]) -> int:
+        now = _now()
+        ids = tuple(dict.fromkeys(int(case_id) for case_id in case_ids))
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT INTO export_batches (filename, operator, created_at) VALUES (?, ?, ?)",
+                (filename, operator, now),
+            )
+            batch_id = int(connection.execute("SELECT last_insert_rowid()").fetchone()[0])
+            connection.executemany(
+                "INSERT INTO export_batch_cases (batch_id, case_id) VALUES (?, ?)",
+                [(batch_id, case_id) for case_id in ids],
+            )
+        return batch_id
+
+    def get_export_batch(self, batch_id: int) -> dict[str, object] | None:
+        with self._connect() as connection:
+            row = connection.execute("SELECT * FROM export_batches WHERE id = ?", (batch_id,)).fetchone()
+        return dict(row) if row else None
+
     def _case_with_lots(self, row: sqlite3.Row) -> CaseRecord:
         case = _case_from_row(row)
         with self._connect() as connection:
@@ -471,7 +583,7 @@ def _case_from_row(row: sqlite3.Row) -> CaseRecord:
         reason_label=row["reason_label"],
         state=row["state"],
         exclusion_reason=row["exclusion_reason"],
-        source_fingerprint=tuple(json.loads(row["source_fingerprint"])),
+        source_fingerprint=_fingerprint_from_json(row["source_fingerprint"]),
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
@@ -480,6 +592,14 @@ def _case_from_row(row: sqlite3.Row) -> CaseRecord:
 def _fingerprint_json(prescription: Prescription) -> str:
     values = [value.isoformat() if isinstance(value, date) else value for value in prescription.reporting_fingerprint]
     return json.dumps(values, ensure_ascii=False)
+
+
+def _fingerprint_from_json(value: str) -> tuple[object, ...]:
+    values = json.loads(value)
+    for index in (3, 5):
+        if values[index]:
+            values[index] = date.fromisoformat(values[index])
+    return tuple(values)
 
 
 def _reason_value(code: str | None, label: str | None) -> str | None:

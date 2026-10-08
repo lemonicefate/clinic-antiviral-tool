@@ -19,6 +19,8 @@ th, td { padding: .65rem; border-bottom: 1px solid #e2e7eb; text-align: left; ve
 .lot-row input { width: 6rem; }
 .state { display: inline-block; padding: .2rem .4rem; border-radius: 4px; background: #edf1f4; white-space: nowrap; }
 .actions { white-space: nowrap; }
+.export-summary { border-left: 4px solid #165d9c; }
+.diff-card { border: 1px solid #d9e0e7; border-radius: 6px; padding: 1rem; margin: 1rem 0; }
 .link-button { padding: 0; border: 0; background: transparent; color: #165d9c; text-decoration: underline; }
 label { display: grid; gap: .3rem; font-weight: 600; }
 input, select, button { font: inherit; padding: .5rem .65rem; border: 1px solid #aab7c4; border-radius: 4px; }

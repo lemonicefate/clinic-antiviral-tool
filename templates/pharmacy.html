@@ -36,8 +36,21 @@
       <label>操作人 <input name="operator" autocomplete="off"></label>
       <button type="submit">套用批次批號</button>
     </form>
+    <form method="post" action="/pharmacy/export" id="export-form" class="batch-form">
+      <label>操作人 <input name="operator" autocomplete="off"></label>
+      <button type="submit">產生 SMIS Excel</button>
+    </form>
   </div>
 </section>
+
+{% if export_summary %}
+<section class="panel export-summary">
+  <h3>Export summary</h3>
+  <p>Selected: {{ export_summary.selected }} · Exported: {{ export_summary.exported }} · Skipped: {{ export_summary.skipped }}</p>
+  {% if download_url %}<p><a href="{{ download_url }}">Download generated workbook</a></p>{% endif %}
+  {% if export_summary.skips %}<ul>{% for skip in export_summary.skips %}<li>Case {{ skip.case_id }} ({{ skip.patient_name }}): {{ skip.reasons|join(', ') }}</li>{% endfor %}</ul>{% endif %}
+</section>
+{% endif %}
 
 {% if cases %}
 <section class="panel table-panel">
@@ -46,7 +59,7 @@
     <tbody>
     {% for case in cases %}
       <tr>
-        <td><input type="checkbox" name="case_ids" value="{{ case.id }}" form="batch-lot-form"> <strong>{{ case.patient_name }}</strong><br><span class="muted">{{ case.medical_record_number }} · {{ case.report_date }}</span></td>
+        <td><input type="checkbox" name="case_ids" value="{{ case.id }}" form="batch-lot-form"> <input type="checkbox" name="export_case_ids" value="{{ case.id }}" form="export-form" {% if case.state == "ready_to_export" %}checked{% endif %}> <strong>{{ case.patient_name }}</strong><br><span class="muted">{{ case.medical_record_number }} · {{ case.report_date }}</span></td>
         <td>{{ case.medication_name }}<br><span class="muted">來源 {{ case.source_quantity }} {{ "顆" if case.source_quantity != 1 else "顆" }}</span></td>
         <td colspan="3">
           <form method="post" action="/pharmacy/save" class="row-form">

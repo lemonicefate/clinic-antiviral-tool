@@ -5,9 +5,11 @@ from datetime import date
 from pathlib import Path
 from itertools import zip_longest
 from urllib.parse import urlencode
+from datetime import datetime, timezone
 
 from fastapi import FastAPI, Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from starlette.responses import Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -20,6 +22,7 @@ from app.cases import (
     parse_lots,
 )
 from app.database import Database
+from app.exporter import ExportError, export_cases, validate_case_for_export
 from app.his import DateRangeError, DbfHisReader, HisReadError, HisReader
 from app.template import ReasonOption, TemplateCompatibilityError, load_reason_options
 
@@ -189,6 +192,8 @@ def create_app(
         state: str = "",
         doctor_id: str = "",
         medication_id: str = "",
+        export_summary: dict[str, object] | None = None,
+        download_url: str | None = None,
     ) -> HTMLResponse:
         parsed_date = None
         if report_date:
@@ -226,6 +231,8 @@ def create_app(
                 "message": message,
                 "success": message,
                 "error": error,
+                "export_summary": export_summary,
+                "download_url": download_url,
             },
         )
 
@@ -356,6 +363,108 @@ def create_app(
             logger.exception("Unexpected batch lot failure")
             return render_pharmacy(request, error="The batch lot action failed. Error: DB_001")
 
+    @app.post("/pharmacy/export", response_class=HTMLResponse)
+    async def export_pharmacy(request: Request) -> HTMLResponse:
+        form = await request.form()
+        try:
+            selected_ids = [int(value) for value in form.getlist("export_case_ids")]
+        except ValueError:
+            return render_pharmacy(request, error="Choose valid cases for export. Error: EXPORT_002")
+        operator = str(form.get("operator") or "pharmacy").strip() or "pharmacy"
+        if not selected_ids:
+            return render_pharmacy(request, error="Choose at least one case for export. Error: EXPORT_002")
+        cases = [database.get_case(case_id) for case_id in selected_ids]
+        if any(case is None for case in cases):
+            return render_pharmacy(request, error="A selected case no longer exists. Error: DB_001")
+        cases = [case for case in cases if case is not None]
+        differences = []
+        for case in cases:
+            current = reader.get(case.source_id)
+            changes = _his_changes(case, current)
+            if changes:
+                differences.append({"case": case, "current": current, "changes": changes})
+        unresolved = []
+        for difference in differences:
+            decision = str(form.get(f"resolution_{difference['case'].id}") or "").strip()
+            if decision not in {"latest", "keep", "exclude"}:
+                unresolved.append(difference)
+                continue
+            if decision == "latest" and difference["current"] is None:
+                unresolved.append(difference)
+                continue
+            try:
+                database.resolve_his_difference(
+                    difference["case"].id,
+                    difference["current"],
+                    decision=decision,
+                    operator=operator,
+                )
+            except ValueError as error:
+                return _render_his_differences(
+                    request,
+                    differences,
+                    selected_ids,
+                    operator,
+                    error=str(error),
+                )
+        if unresolved:
+            return _render_his_differences(request, unresolved, selected_ids, operator)
+
+        refreshed_cases = [database.get_case(case_id) for case_id in selected_ids]
+        refreshed_cases = [case for case in refreshed_cases if case is not None]
+        valid_cases = []
+        skipped = []
+        for case in refreshed_cases:
+            reasons = validate_case_for_export(case)
+            if reasons:
+                skipped.append({"case_id": case.id, "patient_name": case.patient_name, "reasons": reasons})
+            else:
+                valid_cases.append(case)
+        if not valid_cases:
+            return render_pharmacy(
+                request,
+                message="No valid cases were exported.",
+                export_summary={
+                    "selected": len(selected_ids),
+                    "exported": 0,
+                    "skipped": len(skipped),
+                    "skips": skipped,
+                },
+            )
+        filename = _new_export_filename(settings.app_data_path / "exports")
+        output_path = settings.app_data_path / "exports" / filename
+        try:
+            exported = export_cases(settings.template_path, output_path, valid_cases)
+            batch_id = database.create_export_batch(filename, operator, [case.id for case in valid_cases])
+        except (TemplateCompatibilityError, ExportError) as exc:
+            logger.exception("Excel export failed")
+            return render_pharmacy(request, error=f"{exc} Error: {exc.code}")
+        except Exception:
+            logger.exception("Unexpected Excel export failure")
+            output_path.unlink(missing_ok=True)
+            return render_pharmacy(request, error="The Excel export failed. Error: EXPORT_002")
+        return render_pharmacy(
+            request,
+            message=f"Exported {len(valid_cases)} cases; skipped {len(skipped)}.",
+            export_summary={
+                "selected": len(selected_ids),
+                "exported": len(valid_cases),
+                "skipped": len(skipped),
+                "skips": skipped,
+            },
+            download_url=f"/pharmacy/export/{batch_id}/download",
+        )
+
+    @app.get("/pharmacy/export/{batch_id}/download")
+    def download_export(batch_id: int) -> Response:
+        batch = database.get_export_batch(batch_id)
+        if not batch:
+            return HTMLResponse("The export batch was not found. Error: EXPORT_002", status_code=404)
+        path = settings.app_data_path / "exports" / str(batch["filename"])
+        if not path.exists():
+            return HTMLResponse("The generated workbook is missing. Error: EXPORT_002", status_code=404)
+        return FileResponse(path, filename=path.name, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
     @app.post("/pharmacy/exclude", response_class=HTMLResponse)
     def exclude_pharmacy_case(
         request: Request,
@@ -392,7 +501,56 @@ def create_app(
             context={"request": request, "case_id": case_id, "history": database.list_history(case_id)},
         )
 
+    def _render_his_differences(
+        request: Request,
+        differences: list[dict[str, object]],
+        selected_ids: list[int],
+        operator: str,
+        error: str | None = None,
+    ) -> HTMLResponse:
+        return templates.TemplateResponse(
+            request=request,
+            name="hisdiff.html",
+            context={
+                "request": request,
+                "differences": differences,
+                "selected_ids": selected_ids,
+                "operator": operator,
+                "error": error,
+                "success": None,
+            },
+        )
+
     return app
+
+
+def _his_changes(case, current) -> list[dict[str, str]]:
+    if current is None:
+        return [{"field": "HIS order", "before": "saved case", "after": "not found"}]
+    names = [
+        "medical record number",
+        "patient name",
+        "patient ID",
+        "birth date",
+        "sex",
+        "report date",
+        "doctor ID",
+        "medication",
+        "official material",
+        "source quantity",
+        "treat",
+    ]
+    changes = []
+    for name, before, after in zip(names, case.source_fingerprint, current.reporting_fingerprint):
+        if before != after:
+            changes.append({"field": name, "before": str(before), "after": str(after)})
+    return changes
+
+
+def _new_export_filename(export_directory: Path) -> str:
+    export_directory.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-%f")
+    return f"smis-report-{stamp}.xlsx"
 
 
 app = create_app()
