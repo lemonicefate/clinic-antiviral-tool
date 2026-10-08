@@ -50,6 +50,7 @@
 {% if export_summary %}
 <section class="panel export-summary">
   <h3>Export summary</h3>
+  {% if export_summary.warning %}<div class="message error">Warning: one or more selected cases were already uploaded and may require reporting again.</div>{% endif %}
   <p>Selected: {{ export_summary.selected }} · Exported: {{ export_summary.exported }} · Skipped: {{ export_summary.skipped }}</p>
   {% if download_url %}<p><a href="{{ download_url }}">Download generated workbook</a></p>{% endif %}
   {% if batch_id %}<form method="post" action="/pharmacy/batch/{{ batch_id }}/uploaded"><button type="submit">Mark batch uploaded</button></form>{% endif %}
@@ -95,9 +96,12 @@
           <a href="/pharmacy/history/{{ case.id }}">查看變更</a>
           {% if case.state == "uploaded" %}<form method="post" action="/pharmacy/confirm"><input type="hidden" name="confirm_case_ids" value="{{ case.id }}"><button class="link-button" type="submit">Confirm</button></form>{% endif %}
           {% if case.state != "excluded" %}
-          <form method="post" action="/pharmacy/exclude">
+          <form method="post" action="/pharmacy/exclude" class="exclude-form">
             <input type="hidden" name="case_id" value="{{ case.id }}">
-            <input type="hidden" name="reason" value="duplicate">
+            <select name="reason" aria-label="Exclusion reason">
+              {% for reason_code, reason_label in exclusion_reasons.items() %}<option value="{{ reason_code }}">{{ reason_label }}</option>{% endfor %}
+            </select>
+            <input name="other_reason" placeholder="Other reason">
             <button class="link-button" type="submit">排除</button>
           </form>
           {% else %}

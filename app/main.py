@@ -437,6 +437,7 @@ def create_app(
 
         refreshed_cases = [database.get_case(case_id) for case_id in selected_ids]
         refreshed_cases = [case for case in refreshed_cases if case is not None]
+        uploaded_selected = any(case.state == "uploaded" for case in refreshed_cases)
         valid_cases = []
         skipped = []
         for case in refreshed_cases:
@@ -454,6 +455,7 @@ def create_app(
                     "exported": 0,
                     "skipped": len(skipped),
                     "skips": skipped,
+                    "warning": uploaded_selected,
                 },
             )
         filename = _new_export_filename(settings.app_data_path / "exports")
@@ -476,6 +478,7 @@ def create_app(
                 "exported": len(valid_cases),
                 "skipped": len(skipped),
                 "skips": skipped,
+                "warning": uploaded_selected,
             },
             download_url=f"/pharmacy/export/{batch_id}/download",
             batch_id=batch_id,

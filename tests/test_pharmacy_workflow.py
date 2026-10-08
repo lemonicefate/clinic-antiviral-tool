@@ -130,7 +130,7 @@ def test_exclude_and_reinclude_returns_case_to_its_derived_state(tmp_path):
 
     excluded = client.post(
         "/pharmacy/exclude",
-        data={"case_id": str(case.id), "reason": "duplicate"},
+        data={"case_id": str(case.id), "reason": "other", "other_reason": "Patient did not collect"},
     )
     assert excluded.status_code == 200
     assert "Case excluded." in excluded.text

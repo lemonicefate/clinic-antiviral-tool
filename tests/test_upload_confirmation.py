@@ -106,6 +106,16 @@ def test_uploaded_cases_can_be_confirmed_and_default_view_hides_confirmed(tmp_pa
     assert item.patient_name in client.get("/pharmacy?view=all").text
 
 
+def test_manually_reselecting_uploaded_case_shows_export_warning(tmp_path):
+    client, database, item = setup_app(tmp_path)
+    _, case = generate_batch(client, database, item)
+    client.post("/pharmacy/batch/1/uploaded")
+
+    response = client.post("/pharmacy/export", data={"export_case_ids": [str(case.id)], "operator": "P001"})
+
+    assert "already uploaded" in response.text
+
+
 def test_editing_confirmed_case_warns_then_returns_it_to_reporting_flow(tmp_path):
     client, database, item = setup_app(tmp_path)
     _, case = generate_batch(client, database, item)
