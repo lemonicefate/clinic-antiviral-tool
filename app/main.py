@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import shutil
 from datetime import date
 from pathlib import Path
 from itertools import zip_longest
@@ -24,6 +25,7 @@ from app.cases import (
 from app.database import Database
 from app.exporter import ExportError, export_cases, validate_case_for_export
 from app.his import DateRangeError, DbfHisReader, HisReadError, HisReader
+from app.logging_setup import configure_logging
 from app.template import ReasonOption, TemplateCompatibilityError, load_reason_options
 
 
@@ -38,7 +40,7 @@ def create_app(
     database = database or Database(settings.database_path)
     app = FastAPI(title="Clinic Antiviral Tool")
     templates = Jinja2Templates(directory=str(settings.base_dir / "templates"))
-    logger = logging.getLogger("clinic_antiviral")
+    logger = configure_logging(settings.log_path)
     app.state.settings = settings
     app.state.his_reader = reader
     app.state.database = database
@@ -194,6 +196,7 @@ def create_app(
         medication_id: str = "",
         export_summary: dict[str, object] | None = None,
         download_url: str | None = None,
+        batch_id: int | None = None,
     ) -> HTMLResponse:
         parsed_date = None
         if report_date:
@@ -233,6 +236,7 @@ def create_app(
                 "error": error,
                 "export_summary": export_summary,
                 "download_url": download_url,
+                "batch_id": batch_id,
             },
         )
 
@@ -307,8 +311,12 @@ def create_app(
         lot_number: list[str] = Form(default=[]),
         lot_quantity: list[str] = Form(default=[]),
         operator: str = Form(""),
+        confirm_edit: str = Form(""),
     ) -> HTMLResponse:
         try:
+            current_case = database.get_case(case_id)
+            if current_case is None:
+                raise KeyError(case_id)
             selected_code = reason_code.strip() or None
             selected_label = None
             if selected_code:
@@ -319,6 +327,23 @@ def create_app(
                 selected_label = selected.label
             quantity = parse_actual_quantity(actual_quantity)
             lots = parse_lots(zip_longest(lot_number, lot_quantity, fillvalue=""))
+            if current_case.state == "confirmed" and confirm_edit != "yes":
+                return templates.TemplateResponse(
+                    request=request,
+                    name="confirmed-warning.html",
+                    context={
+                        "request": request,
+                        "case": current_case,
+                        "reason_code": selected_code,
+                        "reason_label": selected_label,
+                        "actual_quantity": quantity,
+                        "lots": lots,
+                        "operator": operator,
+                        "reason_options": load_reason_options(settings.template_path),
+                        "error": None,
+                        "success": None,
+                    },
+                )
             database.save_pharmacy_fields(
                 case_id,
                 reason_code=selected_code,
@@ -453,6 +478,7 @@ def create_app(
                 "skips": skipped,
             },
             download_url=f"/pharmacy/export/{batch_id}/download",
+            batch_id=batch_id,
         )
 
     @app.get("/pharmacy/export/{batch_id}/download")
@@ -464,6 +490,35 @@ def create_app(
         if not path.exists():
             return HTMLResponse("The generated workbook is missing. Error: EXPORT_002", status_code=404)
         return FileResponse(path, filename=path.name, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+    @app.post("/pharmacy/batch/{batch_id}/uploaded", response_class=HTMLResponse)
+    def mark_uploaded(request: Request, batch_id: int) -> HTMLResponse:
+        batch = database.get_export_batch(batch_id)
+        if not batch:
+            return render_pharmacy(request, error="The export batch was not found. Error: DB_001")
+        source_path = settings.app_data_path / "exports" / str(batch["filename"])
+        if not source_path.exists():
+            return render_pharmacy(request, error="The generated workbook is missing. Error: EXPORT_002")
+        try:
+            if batch["uploaded"]:
+                return render_pharmacy(request, message="Batch is already marked uploaded.")
+            destination = _uploaded_destination(settings.uploaded_path, source_path.name)
+            shutil.copy2(source_path, destination)
+            database.mark_batch_uploaded(batch_id, str(destination))
+            return render_pharmacy(request, message="Batch marked uploaded; workbook preserved.")
+        except Exception:
+            logger.exception("Upload preservation failed batch_id=%s", batch_id)
+            return render_pharmacy(request, error="The uploaded workbook could not be preserved. Error: EXPORT_002")
+
+    @app.post("/pharmacy/confirm", response_class=HTMLResponse)
+    def confirm_cases(request: Request, confirm_case_ids: list[int] = Form(default=[])) -> HTMLResponse:
+        try:
+            database.confirm_cases(confirm_case_ids)
+            return RedirectResponse("/pharmacy?message=Cases+marked+confirmed.", status_code=303)
+        except KeyError:
+            return render_pharmacy(request, error="Choose existing cases to confirm. Error: DB_001")
+        except ValueError as error:
+            return render_pharmacy(request, error=f"{error} Error: CASE_STATE_001")
 
     @app.post("/pharmacy/exclude", response_class=HTMLResponse)
     def exclude_pharmacy_case(
@@ -551,6 +606,22 @@ def _new_export_filename(export_directory: Path) -> str:
     export_directory.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-%f")
     return f"smis-report-{stamp}.xlsx"
+
+
+def _uploaded_destination(uploaded_directory: Path, filename: str) -> Path:
+    month_directory = uploaded_directory / datetime.now().strftime("%Y") / datetime.now().strftime("%m")
+    month_directory.mkdir(parents=True, exist_ok=True)
+    destination = month_directory / filename
+    if not destination.exists():
+        return destination
+    stem = destination.stem
+    suffix = destination.suffix
+    counter = 1
+    while True:
+        candidate = month_directory / f"{stem}-copy-{counter}{suffix}"
+        if not candidate.exists():
+            return candidate
+        counter += 1
 
 
 app = create_app()

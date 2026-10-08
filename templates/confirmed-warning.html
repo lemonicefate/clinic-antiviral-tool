@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}確認已完成案件修改{% endblock %}
+{% block content %}
+<section class="panel">
+  <h2>確認修改</h2>
+  <div class="message error" role="alert">This case has already been confirmed in SMIS. Changing it may require reporting again.</div>
+  <p>{{ case.patient_name }} · {{ case.medical_record_number }}</p>
+  <form method="post" action="/pharmacy/save" class="row-form">
+    <input type="hidden" name="case_id" value="{{ case.id }}">
+    <input type="hidden" name="confirm_edit" value="yes">
+    <input type="hidden" name="operator" value="{{ operator }}">
+    <select name="reason_code">
+      <option value="">選擇原因</option>
+      {% for option in reason_options %}<option value="{{ option.code }}" {% if option.code == reason_code %}selected{% endif %}>{{ option.code }} - {{ option.label }}</option>{% endfor %}
+    </select>
+    <input name="actual_quantity" value="{{ actual_quantity or '' }}" inputmode="numeric">
+    {% if lots %}{% for lot in lots %}<span class="lot-row"><input name="lot_number" value="{{ lot.lot_number }}"><input name="lot_quantity" value="{{ lot.quantity }}" inputmode="numeric"></span>{% endfor %}{% else %}<span class="lot-row"><input name="lot_number"><input name="lot_quantity" inputmode="numeric"></span>{% endif %}
+    <button type="submit">Proceed with change</button>
+  </form>
+  <p><a href="/pharmacy?view=all">Cancel</a></p>
+</section>
+{% endblock %}

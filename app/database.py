@@ -446,6 +446,51 @@ class Database:
             row = connection.execute("SELECT * FROM export_batches WHERE id = ?", (batch_id,)).fetchone()
         return dict(row) if row else None
 
+    def mark_batch_uploaded(self, batch_id: int, preserved_path: str) -> list[int]:
+        batch = self.get_export_batch(batch_id)
+        if batch is None:
+            raise KeyError(batch_id)
+        if batch["uploaded"]:
+            return self.batch_case_ids(batch_id)
+        now = _now()
+        case_ids = self.batch_case_ids(batch_id)
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE export_batches SET uploaded = 1, uploaded_at = ?, preserved_path = ? WHERE id = ?",
+                (now, preserved_path, batch_id),
+            )
+            if case_ids:
+                placeholders = ",".join("?" for _ in case_ids)
+                connection.execute(
+                    f"UPDATE cases SET state = ?, updated_at = ? WHERE id IN ({placeholders}) AND state != ?",
+                    (UPLOADED, now, *case_ids, EXCLUDED),
+                )
+        return case_ids
+
+    def batch_case_ids(self, batch_id: int) -> list[int]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT case_id FROM export_batch_cases WHERE batch_id = ? ORDER BY case_id",
+                (batch_id,),
+            ).fetchall()
+        return [int(row["case_id"]) for row in rows]
+
+    def confirm_cases(self, case_ids: Iterable[int]) -> list[int]:
+        ids = tuple(dict.fromkeys(int(case_id) for case_id in case_ids))
+        cases = [self.get_case(case_id) for case_id in ids]
+        if not ids or any(case is None for case in cases):
+            raise KeyError("case")
+        if any(case.state != UPLOADED for case in cases if case is not None):
+            raise ValueError("Only uploaded cases can be confirmed complete.")
+        now = _now()
+        with self._connect() as connection:
+            placeholders = ",".join("?" for _ in ids)
+            connection.execute(
+                f"UPDATE cases SET state = ?, updated_at = ? WHERE id IN ({placeholders})",
+                (CONFIRMED, now, *ids),
+            )
+        return list(ids)
+
     def _case_with_lots(self, row: sqlite3.Row) -> CaseRecord:
         case = _case_from_row(row)
         with self._connect() as connection:
