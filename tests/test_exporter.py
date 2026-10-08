@@ -5,7 +5,7 @@ import pytest
 
 from app.cases import LotAllocation, READY_TO_EXPORT
 from app.database import CaseRecord
-from app.exporter import ExportError, export_cases, find_export_table, validate_case_for_export
+from app.exporter import export_cases, validate_case_for_export
 from app.template import TemplateCompatibilityError
 
 

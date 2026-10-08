@@ -82,3 +82,34 @@ def test_doctor_save_rejects_reason_outside_official_code_table_and_keeps_patien
     assert response.status_code == 200
     assert "Choose an official medication-use reason" in response.text
     assert item.patient_name in response.text
+
+
+def test_doctor_reason_change_on_confirmed_case_requires_warning_then_returns_to_reporting(tmp_path):
+    settings = Settings.for_testing(tmp_path)
+    write_reason_template(settings.template_path)
+    item = make_prescription()
+    database = Database(settings.database_path)
+    client = TestClient(create_app(settings=settings, his_reader=InMemoryHisReader([item]), database=database))
+    case = database.save_doctor_reason(item, "R01", "符合公費使用條件", "D001")
+    batch_id = database.create_export_batch("confirmed.xlsx", "P001", [case.id])
+    database.mark_batch_uploaded(batch_id, str(tmp_path / "confirmed.xlsx"))
+    database.confirm_cases([case.id])
+
+    warning = client.post(
+        "/doctor/save",
+        data={"source_id": item.source_id, "reason_code": "R02", "doctor_id": "D001"},
+    )
+    assert "This case has already been confirmed in SMIS" in warning.text
+
+    saved = client.post(
+        "/doctor/save",
+        data={
+            "source_id": item.source_id,
+            "reason_code": "R02",
+            "doctor_id": "D001",
+            "confirm_edit": "yes",
+        },
+    )
+    assert "已儲存用藥原因" in saved.text
+    assert database.get_case(case.id).reason_code == "R02"
+    assert database.get_case(case.id).state == MISSING_LOT_QUANTITY

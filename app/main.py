@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 import shutil
 from datetime import date
 from pathlib import Path
@@ -111,6 +110,7 @@ def create_app(
         source_id: str = Form(...),
         reason_code: str = Form(...),
         doctor_id: str = Form(""),
+        confirm_edit: str = Form(""),
     ) -> HTMLResponse:
         prescription = None
         reason_options: list[ReasonOption] = []
@@ -125,6 +125,27 @@ def create_app(
                 if selected is None:
                     error = "Choose an official medication-use reason. Error: EXPORT_TEMPLATE_001"
                 else:
+                    existing_case = database.get_case_by_source_id(prescription.source_id)
+                    if (
+                        existing_case
+                        and existing_case.state == "confirmed"
+                        and existing_case.reason_code != selected.code
+                        and confirm_edit != "yes"
+                    ):
+                        return templates.TemplateResponse(
+                            request=request,
+                            name="doctor-confirmed-warning.html",
+                            context={
+                                "request": request,
+                                "case": existing_case,
+                                "source_id": prescription.source_id,
+                                "doctor_id": doctor_id or prescription.doctor_id,
+                                "reason_code": selected.code,
+                                "reason_label": selected.label,
+                                "error": None,
+                                "success": None,
+                            },
+                        )
                     database.save_doctor_reason(
                         prescription,
                         selected.code,
@@ -461,7 +482,7 @@ def create_app(
         filename = _new_export_filename(settings.app_data_path / "exports")
         output_path = settings.app_data_path / "exports" / filename
         try:
-            exported = export_cases(settings.template_path, output_path, valid_cases)
+            export_cases(settings.template_path, output_path, valid_cases)
             batch_id = database.create_export_batch(filename, operator, [case.id for case in valid_cases])
         except (TemplateCompatibilityError, ExportError) as exc:
             logger.exception("Excel export failed")
