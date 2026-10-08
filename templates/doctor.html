@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}醫師回報{% endblock %}
+{% block content %}
+<section class="panel">
+  <h2>醫師回報</h2>
+  <form method="get" action="/doctor" class="lookup-form">
+    <label>醫師代號
+      <input name="doctor_id" value="{{ doctor_id }}" required autocomplete="off">
+    </label>
+    <button type="submit" name="action" value="recent">載入最近一筆</button>
+    <label>病歷號
+      <input name="mrn" value="{{ mrn }}" autocomplete="off">
+    </label>
+    <button type="submit" name="action" value="mrn">依病歷號搜尋</button>
+  </form>
+</section>
+
+{% if prescription %}
+<section class="panel patient-card">
+  <h2>請確認病人</h2>
+  <dl>
+    <dt>姓名</dt><dd>{{ prescription.patient_name }}</dd>
+    <dt>病歷號</dt><dd>{{ prescription.medical_record_number }}</dd>
+    <dt>身分識別</dt><dd>{{ prescription.patient_id }}</dd>
+    <dt>日期</dt><dd>{{ prescription.report_date }}</dd>
+    <dt>藥品</dt><dd>{{ prescription.medication_name }}</dd>
+    <dt>數量</dt><dd>{{ prescription.source_quantity }} {{ prescription.unit }}</dd>
+  </dl>
+  <p class="muted">醫師用藥原因將在下一步由正式 Excel 代碼表提供。</p>
+</section>
+{% endif %}
+{% endblock %}

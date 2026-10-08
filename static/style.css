@@ -1,0 +1,19 @@
+:root { color-scheme: light; font-family: system-ui, "Microsoft JhengHei", sans-serif; }
+body { margin: 0; background: #f4f6f8; color: #17202a; }
+.topbar { display: flex; gap: 2rem; align-items: center; justify-content: space-between; padding: 1rem 2rem; background: #123c69; color: white; }
+.topbar h1 { margin: 0; font-size: 1.2rem; }
+nav { display: flex; gap: 1rem; }
+nav a { color: white; }
+.page { max-width: 1100px; margin: 2rem auto; padding: 0 1rem; }
+.panel { background: white; border: 1px solid #d9e0e7; border-radius: 8px; padding: 1.25rem; margin-bottom: 1rem; box-shadow: 0 1px 2px #0000000d; }
+.lookup-form { display: flex; gap: .75rem; align-items: end; flex-wrap: wrap; }
+label { display: grid; gap: .3rem; font-weight: 600; }
+input, select, button { font: inherit; padding: .5rem .65rem; border: 1px solid #aab7c4; border-radius: 4px; }
+button { cursor: pointer; background: #165d9c; color: white; border-color: #165d9c; }
+button:hover { background: #0e477a; }
+.message { padding: .75rem 1rem; border-radius: 4px; margin-bottom: 1rem; }
+.message.error { background: #fde8e8; color: #8a1c1c; border: 1px solid #f3b4b4; }
+dl { display: grid; grid-template-columns: 8rem 1fr; gap: .5rem 1rem; }
+dt { font-weight: 700; }
+dd { margin: 0; }
+.muted { color: #5b6773; }

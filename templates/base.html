@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}公費流感抗病毒藥劑回報{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1>公費流感抗病毒藥劑回報</h1>
+    <nav><a href="/doctor">醫師</a><a href="/pharmacy">藥局 / 回報</a></nav>
+  </header>
+  <main class="page">
+    {% if error %}<div class="message error" role="alert">{{ error }}</div>{% endif %}
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>
