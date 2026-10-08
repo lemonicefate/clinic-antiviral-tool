@@ -7,15 +7,20 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
+from app.cases import (
+    CONFIRMED,
+    EXCLUDED,
+    MISSING_LOT_QUANTITY,
+    MISSING_REASON,
+    READY_TO_EXPORT,
+    LotAllocation,
+    derive_state,
+    lots_display,
+)
 from app.his import Prescription
 
 
-MISSING_REASON = "missing_reason"
-MISSING_LOT_QUANTITY = "missing_lot_quantity"
-READY_TO_EXPORT = "ready_to_export"
 UPLOADED = "uploaded"
-CONFIRMED = "confirmed"
-EXCLUDED = "excluded"
 
 
 @dataclass(frozen=True)
@@ -41,6 +46,7 @@ class CaseRecord:
     source_fingerprint: tuple[object, ...]
     created_at: str
     updated_at: str
+    lots: tuple[LotAllocation, ...] = ()
 
 
 SCHEMA = """
@@ -117,16 +123,175 @@ class Database:
     def get_case(self, case_id: int) -> CaseRecord | None:
         with self._connect() as connection:
             row = connection.execute("SELECT * FROM cases WHERE id = ?", (case_id,)).fetchone()
-        return _case_from_row(row) if row else None
+        return self._case_with_lots(row) if row else None
 
     def get_case_by_source_id(self, source_id: str) -> CaseRecord | None:
         with self._connect() as connection:
             row = connection.execute("SELECT * FROM cases WHERE source_id = ?", (source_id,)).fetchone()
-        return _case_from_row(row) if row else None
+        return self._case_with_lots(row) if row else None
 
     def count_cases(self) -> int:
         with self._connect() as connection:
             return int(connection.execute("SELECT COUNT(*) FROM cases").fetchone()[0])
+
+    def list_cases(
+        self,
+        *,
+        include_completed: bool = False,
+        include_excluded: bool = False,
+        report_date: date | None = None,
+        state: str | None = None,
+        doctor_id: str | None = None,
+        medication_id: str | None = None,
+    ) -> list[CaseRecord]:
+        clauses: list[str] = []
+        values: list[object] = []
+        if not include_completed:
+            clauses.append("state != ?")
+            values.append(CONFIRMED)
+        if not include_excluded:
+            clauses.append("state != ?")
+            values.append(EXCLUDED)
+        if report_date:
+            clauses.append("report_date = ?")
+            values.append(report_date.isoformat())
+        if state:
+            clauses.append("state = ?")
+            values.append(state)
+        if doctor_id:
+            clauses.append("doctor_id = ?")
+            values.append(doctor_id)
+        if medication_id:
+            clauses.append("medication_id = ?")
+            values.append(medication_id)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"SELECT * FROM cases {where} ORDER BY report_date DESC, id DESC", values
+            ).fetchall()
+        return [self._case_with_lots(row) for row in rows]
+
+    def save_pharmacy_fields(
+        self,
+        case_id: int,
+        *,
+        reason_code: str | None,
+        reason_label: str | None,
+        actual_quantity: int | None,
+        lots: tuple[LotAllocation, ...],
+        operator: str,
+    ) -> CaseRecord:
+        existing = self.get_case(case_id)
+        if existing is None:
+            raise KeyError(case_id)
+        now = _now()
+        state = derive_state(
+            reason_code=reason_code,
+            actual_quantity=actual_quantity,
+            lots=lots,
+            previous_state=existing.state,
+        )
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE cases
+                SET reason_code = ?, reason_label = ?, actual_quantity = ?, state = ?,
+                    exclusion_reason = CASE WHEN state = ? THEN exclusion_reason ELSE NULL END,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    reason_code,
+                    reason_label,
+                    actual_quantity,
+                    state,
+                    EXCLUDED,
+                    now,
+                    case_id,
+                ),
+            )
+            connection.execute("DELETE FROM case_lots WHERE case_id = ?", (case_id,))
+            connection.executemany(
+                "INSERT INTO case_lots (case_id, lot_number, quantity, position) VALUES (?, ?, ?, ?)",
+                [(case_id, lot.lot_number, lot.quantity, index) for index, lot in enumerate(lots)],
+            )
+            _record_change_if_needed(
+                connection,
+                case_id=case_id,
+                field="medication_use_reason",
+                old_value=_reason_value(existing.reason_code, existing.reason_label),
+                new_value=_reason_value(reason_code, reason_label),
+                operator=operator,
+                changed_at=now,
+            )
+            _record_change_if_needed(
+                connection,
+                case_id=case_id,
+                field="actual_quantity",
+                old_value=str(existing.actual_quantity) if existing.actual_quantity is not None else None,
+                new_value=str(actual_quantity) if actual_quantity is not None else None,
+                operator=operator,
+                changed_at=now,
+            )
+            _record_change_if_needed(
+                connection,
+                case_id=case_id,
+                field="lot_number",
+                old_value=lots_display(existing.lots) or None,
+                new_value=lots_display(lots) or None,
+                operator=operator,
+                changed_at=now,
+            )
+        return self.get_case(case_id)  # type: ignore[return-value]
+
+    def exclude_case(self, case_id: int, exclusion_reason: str) -> CaseRecord:
+        existing = self.get_case(case_id)
+        if existing is None:
+            raise KeyError(case_id)
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE cases SET state = ?, exclusion_reason = ?, updated_at = ? WHERE id = ?",
+                (EXCLUDED, exclusion_reason, _now(), case_id),
+            )
+        return self.get_case(case_id)  # type: ignore[return-value]
+
+    def reinclude_case(self, case_id: int) -> CaseRecord:
+        existing = self.get_case(case_id)
+        if existing is None:
+            raise KeyError(case_id)
+        state = derive_state(
+            reason_code=existing.reason_code,
+            actual_quantity=existing.actual_quantity,
+            lots=existing.lots,
+        )
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE cases SET state = ?, exclusion_reason = NULL, updated_at = ? WHERE id = ?",
+                (state, _now(), case_id),
+            )
+        return self.get_case(case_id)  # type: ignore[return-value]
+
+    def list_history(self, case_id: int) -> list[dict[str, str | None]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT changed_at, operator, field, old_value, new_value
+                FROM change_history WHERE case_id = ? ORDER BY id DESC
+                """,
+                (case_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def _case_with_lots(self, row: sqlite3.Row) -> CaseRecord:
+        case = _case_from_row(row)
+        with self._connect() as connection:
+            lots = connection.execute(
+                "SELECT lot_number, quantity FROM case_lots WHERE case_id = ? ORDER BY position",
+                (case.id,),
+            ).fetchall()
+        return CaseRecord(
+            **{**case.__dict__, "lots": tuple(LotAllocation(row["lot_number"], int(row["quantity"])) for row in lots)}
+        )
 
     def ensure_case(self, prescription: Prescription) -> CaseRecord:
         existing = self.get_case_by_source_id(prescription.source_id)
@@ -184,11 +349,10 @@ class Database:
                 case_id = existing.id
                 old_reason = _reason_value(existing.reason_code, existing.reason_label)
                 new_reason = _reason_value(reason_code, reason_label)
-                state = _state_for(
+                state = derive_state(
                     reason_code=reason_code,
                     actual_quantity=existing.actual_quantity,
-                    lot_total=0,
-                    lot_count=0,
+                    lots=existing.lots,
                     previous_state=existing.state,
                 )
                 connection.execute(
@@ -272,21 +436,25 @@ def _reason_value(code: str | None, label: str | None) -> str | None:
     return f"{code or ''}: {label or ''}".strip()
 
 
-def _state_for(
+def _record_change_if_needed(
+    connection: sqlite3.Connection,
     *,
-    reason_code: str | None,
-    actual_quantity: int | None,
-    lot_total: int,
-    lot_count: int,
-    previous_state: str | None = None,
-) -> str:
-    if previous_state == EXCLUDED:
-        return EXCLUDED
-    if not reason_code:
-        return MISSING_REASON
-    if actual_quantity is None or actual_quantity <= 0 or lot_count == 0 or lot_total != actual_quantity:
-        return MISSING_LOT_QUANTITY
-    return READY_TO_EXPORT
+    case_id: int,
+    field: str,
+    old_value: str | None,
+    new_value: str | None,
+    operator: str,
+    changed_at: str,
+) -> None:
+    if old_value == new_value:
+        return
+    connection.execute(
+        """
+        INSERT INTO change_history (case_id, field, old_value, new_value, operator, changed_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (case_id, field, old_value, new_value, operator, changed_at),
+    )
 
 
 def _now() -> str:

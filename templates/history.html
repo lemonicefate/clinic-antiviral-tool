@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}案件變更{% endblock %}
+{% block content %}
+<section class="panel">
+  <h2>案件 {{ case_id }} 的重要欄位變更</h2>
+  {% if history %}
+  <table>
+    <thead><tr><th>時間</th><th>操作人</th><th>欄位</th><th>原值</th><th>新值</th></tr></thead>
+    <tbody>{% for entry in history %}<tr><td>{{ entry.changed_at }}</td><td>{{ entry.operator }}</td><td>{{ entry.field }}</td><td>{{ entry.old_value or '' }}</td><td>{{ entry.new_value or '' }}</td></tr>{% endfor %}</tbody>
+  </table>
+  {% else %}<p>尚無重要欄位變更。</p>{% endif %}
+  <p><a href="/pharmacy">回到工作台</a></p>
+</section>
+{% endblock %}

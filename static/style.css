@@ -7,6 +7,18 @@ nav a { color: white; }
 .page { max-width: 1100px; margin: 2rem auto; padding: 0 1rem; }
 .panel { background: white; border: 1px solid #d9e0e7; border-radius: 8px; padding: 1.25rem; margin-bottom: 1rem; box-shadow: 0 1px 2px #0000000d; }
 .lookup-form { display: flex; gap: .75rem; align-items: end; flex-wrap: wrap; }
+.toolbar-grid { display: grid; gap: 1rem; }
+.scan-form, .filter-form { display: flex; gap: .75rem; align-items: end; flex-wrap: wrap; }
+.table-panel { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; }
+th, td { padding: .65rem; border-bottom: 1px solid #e2e7eb; text-align: left; vertical-align: top; }
+.row-form { display: flex; gap: .4rem; align-items: center; flex-wrap: wrap; }
+.row-form select { min-width: 13rem; }
+.lot-row { display: inline-flex; gap: .3rem; }
+.lot-row input { width: 6rem; }
+.state { display: inline-block; padding: .2rem .4rem; border-radius: 4px; background: #edf1f4; white-space: nowrap; }
+.actions { white-space: nowrap; }
+.link-button { padding: 0; border: 0; background: transparent; color: #165d9c; text-decoration: underline; }
 label { display: grid; gap: .3rem; font-weight: 600; }
 input, select, button { font: inherit; padding: .5rem .65rem; border: 1px solid #aab7c4; border-radius: 4px; }
 button { cursor: pointer; background: #165d9c; color: white; border-color: #165d9c; }

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import logging
+from datetime import date
 from pathlib import Path
+from itertools import zip_longest
+from urllib.parse import urlencode
 
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -9,8 +12,14 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from app.config import Settings
+from app.cases import (
+    EXCLUSION_REASONS,
+    CaseFieldError,
+    parse_actual_quantity,
+    parse_lots,
+)
 from app.database import Database
-from app.his import DbfHisReader, HisReadError, HisReader
+from app.his import DateRangeError, DbfHisReader, HisReadError, HisReader
 from app.template import ReasonOption, TemplateCompatibilityError, load_reason_options
 
 
@@ -158,6 +167,204 @@ def create_app(
                 "success": "",
                 "error": error,
             },
+        )
+
+    state_labels = {
+        "missing_reason": "Missing reason",
+        "missing_lot_quantity": "Missing lot/quantity",
+        "ready_to_export": "Ready to export",
+        "uploaded": "Uploaded",
+        "confirmed": "Confirmed complete",
+        "excluded": "Excluded",
+    }
+
+    def render_pharmacy(
+        request: Request,
+        *,
+        error: str | None = None,
+        message: str | None = None,
+        view: str = "unfinished",
+        report_date: str = "",
+        state: str = "",
+        doctor_id: str = "",
+        medication_id: str = "",
+    ) -> HTMLResponse:
+        parsed_date = None
+        if report_date:
+            try:
+                parsed_date = date.fromisoformat(report_date)
+            except ValueError:
+                error = "The selected date is invalid. Error: HIS_RANGE_002"
+        try:
+            reason_options = load_reason_options(settings.template_path)
+        except TemplateCompatibilityError as exc:
+            reason_options = []
+            error = f"{exc.message} Error: {exc.code}"
+        cases = database.list_cases(
+            include_completed=view == "all",
+            include_excluded=view in {"all", "excluded"},
+            report_date=parsed_date,
+            state=state or None,
+            doctor_id=doctor_id.strip() or None,
+            medication_id=medication_id.strip() or None,
+        )
+        return templates.TemplateResponse(
+            request=request,
+            name="pharmacy.html",
+            context={
+                "request": request,
+                "cases": cases,
+                "reason_options": reason_options,
+                "state_labels": state_labels,
+                "state": state,
+                "view": view,
+                "report_date": report_date,
+                "doctor_id": doctor_id,
+                "medication_id": medication_id,
+                "exclusion_reasons": EXCLUSION_REASONS,
+                "message": message,
+                "success": message,
+                "error": error,
+            },
+        )
+
+    @app.get("/pharmacy", response_class=HTMLResponse)
+    def pharmacy_page(
+        request: Request,
+        view: str = "unfinished",
+        report_date: str = "",
+        state: str = "",
+        doctor_id: str = "",
+        medication_id: str = "",
+        message: str = "",
+        error: str = "",
+    ) -> HTMLResponse:
+        return render_pharmacy(
+            request,
+            error=error or None,
+            message=message or None,
+            view=view,
+            report_date=report_date,
+            state=state,
+            doctor_id=doctor_id,
+            medication_id=medication_id,
+        )
+
+    @app.post("/pharmacy/scan", response_class=HTMLResponse)
+    def scan_pharmacy(
+        request: Request,
+        scan_mode: str = Form(...),
+        scan_date: str = Form(""),
+        start_date: str = Form(""),
+        end_date: str = Form(""),
+        operator: str = Form(""),
+    ) -> HTMLResponse:
+        try:
+            if scan_mode == "today":
+                start = end = date.today()
+            elif scan_mode == "date":
+                start = end = date.fromisoformat(scan_date)
+            elif scan_mode == "range":
+                start = date.fromisoformat(start_date)
+                end = date.fromisoformat(end_date)
+            else:
+                raise DateRangeError()
+            if settings.go_live_date and start < settings.go_live_date:
+                raise HisReadError("HIS_RANGE_002", "The scan cannot include dates before go-live.")
+            prescriptions = reader.scan(start, end)
+            created = 0
+            for prescription in prescriptions:
+                if database.get_case_by_source_id(prescription.source_id) is None:
+                    database.ensure_case(prescription)
+                    created += 1
+            query = urlencode({"message": f"Scanned {len(prescriptions)} prescriptions; created {created} cases."})
+            return RedirectResponse(f"/pharmacy?{query}", status_code=303)
+        except DateRangeError as exc:
+            return render_pharmacy(request, error=f"{exc.message} Error: {exc.code}")
+        except HisReadError as exc:
+            logger.warning("HIS scan failed code=%s", exc.code)
+            return render_pharmacy(request, error=f"{exc.message} Error: {exc.code}")
+        except ValueError:
+            return render_pharmacy(request, error="Enter a valid scan date or range. Error: HIS_RANGE_002")
+        except Exception:
+            logger.exception("Unexpected pharmacy scan failure")
+            return render_pharmacy(request, error="The scan could not be completed. Error: HIS_READ_001")
+
+    @app.post("/pharmacy/save", response_class=HTMLResponse)
+    def save_pharmacy_case(
+        request: Request,
+        case_id: int = Form(...),
+        reason_code: str = Form(""),
+        actual_quantity: str = Form(""),
+        lot_number: list[str] = Form(default=[]),
+        lot_quantity: list[str] = Form(default=[]),
+        operator: str = Form(""),
+    ) -> HTMLResponse:
+        try:
+            selected_code = reason_code.strip() or None
+            selected_label = None
+            if selected_code:
+                reason_options = load_reason_options(settings.template_path)
+                selected = next((option for option in reason_options if option.code == selected_code), None)
+                if selected is None:
+                    raise CaseFieldError("Choose an official medication-use reason.")
+                selected_label = selected.label
+            quantity = parse_actual_quantity(actual_quantity)
+            lots = parse_lots(zip_longest(lot_number, lot_quantity, fillvalue=""))
+            database.save_pharmacy_fields(
+                case_id,
+                reason_code=selected_code,
+                reason_label=selected_label,
+                actual_quantity=quantity,
+                lots=lots,
+                operator=operator.strip() or "pharmacy",
+            )
+            query = urlencode({"message": "Case saved."})
+            return RedirectResponse(f"/pharmacy?{query}", status_code=303)
+        except CaseFieldError as exc:
+            return render_pharmacy(request, error=f"{exc.message} Error: {exc.code}")
+        except TemplateCompatibilityError as exc:
+            return render_pharmacy(request, error=f"{exc.message} Error: {exc.code}")
+        except KeyError:
+            return render_pharmacy(request, error="The case no longer exists. Error: DB_001")
+        except Exception:
+            logger.exception("Unexpected pharmacy save failure")
+            return render_pharmacy(request, error="The case could not be saved. Error: DB_001")
+
+    @app.post("/pharmacy/exclude", response_class=HTMLResponse)
+    def exclude_pharmacy_case(
+        request: Request,
+        case_id: int = Form(...),
+        reason: str = Form(...),
+        other_reason: str = Form(""),
+    ) -> HTMLResponse:
+        label = EXCLUSION_REASONS.get(reason)
+        if label is None:
+            return render_pharmacy(request, error="Choose a valid exclusion reason. Error: CASE_FIELD_001")
+        if reason == "other":
+            if not other_reason.strip():
+                return render_pharmacy(request, error="Enter a short reason for Other. Error: CASE_FIELD_001")
+            label = f"Other: {other_reason.strip()}"
+        try:
+            database.exclude_case(case_id, label)
+            return RedirectResponse("/pharmacy?message=Case+excluded.", status_code=303)
+        except KeyError:
+            return render_pharmacy(request, error="The case no longer exists. Error: DB_001")
+
+    @app.post("/pharmacy/reinclude", response_class=HTMLResponse)
+    def reinclude_pharmacy_case(request: Request, case_id: int = Form(...)) -> HTMLResponse:
+        try:
+            database.reinclude_case(case_id)
+            return RedirectResponse("/pharmacy?message=Case+included+again.", status_code=303)
+        except KeyError:
+            return render_pharmacy(request, error="The case no longer exists. Error: DB_001")
+
+    @app.get("/pharmacy/history/{case_id}", response_class=HTMLResponse)
+    def pharmacy_history(request: Request, case_id: int) -> HTMLResponse:
+        return templates.TemplateResponse(
+            request=request,
+            name="history.html",
+            context={"request": request, "case_id": case_id, "history": database.list_history(case_id)},
         )
 
     return app
