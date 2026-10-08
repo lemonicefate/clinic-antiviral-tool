@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import Iterable
 
 
 @dataclass(frozen=True)
@@ -47,8 +48,14 @@ def get_medication_mapping(mapping_id: str) -> MedicationMapping:
     raise KeyError(f"Unknown public antiviral mapping: {mapping_id}")
 
 
-def find_medication_mapping(*, med1: object = "", itemn: object = "", labnum: object = "") -> MedicationMapping | None:
-    for mapping in PUBLIC_ANTIVIRALS:
+def find_medication_mapping(
+    *,
+    med1: object = "",
+    itemn: object = "",
+    labnum: object = "",
+    mappings: Iterable[MedicationMapping] = PUBLIC_ANTIVIRALS,
+) -> MedicationMapping | None:
+    for mapping in mappings:
         if mapping.matches(med1=med1, itemn=itemn, labnum=labnum):
             return mapping
     return None

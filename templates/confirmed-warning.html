@@ -14,7 +14,8 @@
       {% for option in reason_options %}<option value="{{ option.code }}" {% if option.code == reason_code %}selected{% endif %}>{{ option.code }} - {{ option.label }}</option>{% endfor %}
     </select>
     <input name="actual_quantity" value="{{ actual_quantity or '' }}" inputmode="numeric">
-    {% if lots %}{% for lot in lots %}<span class="lot-row"><input name="lot_number" value="{{ lot.lot_number }}"><input name="lot_quantity" value="{{ lot.quantity }}" inputmode="numeric"></span>{% endfor %}{% else %}<span class="lot-row"><input name="lot_number"><input name="lot_quantity" inputmode="numeric"></span>{% endif %}
+    <span class="lots-editor">{% if lots %}{% for lot in lots %}<span class="lot-row"><input name="lot_number" value="{{ lot.lot_number }}"><input name="lot_quantity" value="{{ lot.quantity }}" inputmode="numeric"></span>{% endfor %}{% else %}<span class="lot-row"><input name="lot_number"><input name="lot_quantity" inputmode="numeric"></span>{% endif %}</span>
+    <button type="button" class="link-button add-lot">+ Add another lot</button>
     <button type="submit">Proceed with change</button>
   </form>
   <p><a href="/pharmacy?view=all">Cancel</a></p>

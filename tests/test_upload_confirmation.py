@@ -150,3 +150,26 @@ def test_editing_confirmed_case_warns_then_returns_it_to_reporting_flow(tmp_path
 
     assert "Case saved." in saved.text
     assert database.get_case(case.id).state == READY_TO_EXPORT
+
+
+def test_noop_save_on_confirmed_case_preserves_confirmed_state(tmp_path):
+    client, database, item = setup_app(tmp_path)
+    _, case = generate_batch(client, database, item)
+    client.post("/pharmacy/batch/1/uploaded")
+    client.post("/pharmacy/confirm", data={"confirm_case_ids": [str(case.id)]})
+
+    saved = client.post(
+        "/pharmacy/save",
+        data={
+            "case_id": str(case.id),
+            "reason_code": "R01",
+            "actual_quantity": "10",
+            "lot_number": ["LOT-A"],
+            "lot_quantity": ["10"],
+            "operator": "P001",
+            "confirm_edit": "yes",
+        },
+    )
+
+    assert "Case saved." in saved.text
+    assert database.get_case(case.id).state == "confirmed"

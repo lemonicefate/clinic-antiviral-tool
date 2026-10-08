@@ -3,7 +3,7 @@ from datetime import date
 from fastapi.testclient import TestClient
 from openpyxl import Workbook
 
-from app.cases import MISSING_REASON
+from app.cases import LotAllocation, MISSING_REASON, READY_TO_EXPORT
 from app.config import Settings
 from app.database import Database
 from app.his import InMemoryHisReader, Prescription
@@ -97,3 +97,38 @@ def test_workbench_exposes_additional_lot_action(tmp_path):
     client, _ = make_client(tmp_path, [make_prescription("A")])
 
     assert "+ Add another lot" in client.get("/pharmacy").text
+
+
+def test_batch_lot_warns_before_changing_confirmed_case(tmp_path):
+    client, database = make_client(tmp_path, [make_prescription("A")])
+    case = database.list_cases()[0]
+    database.save_pharmacy_fields(
+        case.id,
+        reason_code="R01",
+        reason_label="符合公費使用條件",
+        actual_quantity=10,
+        lots=(LotAllocation("LOT-OLD", 10),),
+        operator="P001",
+    )
+    batch_id = database.create_export_batch("confirmed.xlsx", "P001", [case.id])
+    database.mark_batch_uploaded(batch_id, str(tmp_path / "confirmed.xlsx"))
+    database.confirm_cases([case.id])
+
+    warning = client.post(
+        "/pharmacy/batch-lot",
+        data={"case_ids": [str(case.id)], "lot_number": "LOT-NEW", "operator": "P001"},
+    )
+    assert "This case has already been confirmed in SMIS" in warning.text
+    assert database.get_case(case.id).state == "confirmed"
+
+    saved = client.post(
+        "/pharmacy/batch-lot",
+        data={
+            "case_ids": [str(case.id)],
+            "lot_number": "LOT-NEW",
+            "operator": "P001",
+            "confirm_edit": "yes",
+        },
+    )
+    assert "Batch lot applied." in saved.text
+    assert database.get_case(case.id).state == READY_TO_EXPORT

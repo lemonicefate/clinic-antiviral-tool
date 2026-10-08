@@ -113,3 +113,35 @@ def test_doctor_reason_change_on_confirmed_case_requires_warning_then_returns_to
     assert "已儲存用藥原因" in saved.text
     assert database.get_case(case.id).reason_code == "R02"
     assert database.get_case(case.id).state == MISSING_LOT_QUANTITY
+
+
+def test_mrn_search_requires_selection_when_multiple_orders_match(tmp_path):
+    settings = Settings.for_testing(tmp_path)
+    write_reason_template(settings.template_path)
+    first = Prescription(**{**make_prescription().__dict__, "source_id": "ORDER-1"})
+    second = Prescription(**{**make_prescription().__dict__, "source_id": "ORDER-2"})
+    second = Prescription(**{**second.__dict__, "report_date": date(2026, 10, 8)})
+    client = TestClient(
+        create_app(settings=settings, his_reader=InMemoryHisReader([first, second]))
+    )
+
+    response = client.get("/doctor", params={"action": "mrn", "doctor_id": "D001", "mrn": "MRN001"})
+
+    assert response.status_code == 200
+    assert "請選擇處方" in response.text
+    assert "ORDER-1" in response.text
+    assert "ORDER-2" in response.text
+    assert "No matching antiviral prescription" not in response.text
+
+    selected = client.get(
+        "/doctor",
+        params={
+            "action": "mrn",
+            "doctor_id": "D001",
+            "mrn": "MRN001",
+            "source_id": "ORDER-2",
+        },
+    )
+
+    assert "ORDER-2" in selected.text
+    assert "用藥原因" in selected.text

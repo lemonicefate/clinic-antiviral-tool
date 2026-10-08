@@ -207,3 +207,29 @@ def test_changed_case_can_use_latest_his_quantity_before_export(tmp_path):
     assert saved.source_quantity == 12
     assert saved.actual_quantity == 12
     assert saved.lots[0].quantity == 12
+
+
+def test_missing_his_order_can_keep_current_reporting_data(tmp_path):
+    original = make_prescription("MISSING")
+    client, database, reader = make_client(tmp_path, [original])
+    case = make_ready_case(database, original)
+    reader.prescriptions = []
+
+    blocked = client.post(
+        "/pharmacy/export",
+        data={"export_case_ids": [str(case.id)], "operator": "P001"},
+    )
+    assert "HIS order" in blocked.text
+    assert "Keep current reporting data" in blocked.text
+
+    resolved = client.post(
+        "/pharmacy/export",
+        data={
+            "export_case_ids": [str(case.id)],
+            "operator": "P001",
+            f"resolution_{case.id}": "keep",
+        },
+    )
+
+    assert "Exported: 1" in resolved.text
+    assert database.get_case(case.id).his_missing_acknowledged is True

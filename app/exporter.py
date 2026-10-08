@@ -78,11 +78,16 @@ def validate_case_for_export(case: CaseRecord) -> tuple[str, ...]:
         reasons.append("actual quantity is missing or invalid")
     if not case.lots:
         reasons.append("missing lot")
+    elif any(lot.quantity <= 0 for lot in case.lots):
+        reasons.append("lot quantities must be greater than zero")
     elif case.actual_quantity is not None and sum(lot.quantity for lot in case.lots) != case.actual_quantity:
         reasons.append("lot quantities do not equal actual quantity")
     for field_name, value in (
         ("medical record number", case.medical_record_number),
         ("patient name", case.patient_name),
+        ("patient ID", case.patient_id),
+        ("birth date", case.birth_date),
+        ("sex", case.sex),
         ("report date", case.report_date),
         ("doctor ID", case.doctor_id),
         ("official material", case.official_material),

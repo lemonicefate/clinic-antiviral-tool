@@ -48,7 +48,12 @@ class CaseRecord:
     source_fingerprint: tuple[object, ...]
     created_at: str
     updated_at: str
+    his_missing_acknowledged: bool = False
     lots: tuple[LotAllocation, ...] = ()
+
+    @property
+    def treat(self) -> str:
+        return str(self.source_fingerprint[-1] or "") if self.source_fingerprint else ""
 
 
 SCHEMA = """
@@ -72,6 +77,7 @@ CREATE TABLE IF NOT EXISTS cases (
     state TEXT NOT NULL,
     exclusion_reason TEXT,
     source_fingerprint TEXT NOT NULL,
+    his_missing_acknowledged INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -121,6 +127,13 @@ class Database:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as connection:
             connection.executescript(SCHEMA)
+            columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(cases)").fetchall()
+            }
+            if "his_missing_acknowledged" not in columns:
+                connection.execute(
+                    "ALTER TABLE cases ADD COLUMN his_missing_acknowledged INTEGER NOT NULL DEFAULT 0"
+                )
 
     def get_case(self, case_id: int) -> CaseRecord | None:
         with self._connect() as connection:
@@ -192,7 +205,12 @@ class Database:
             actual_quantity=actual_quantity,
             lots=lots,
             previous_state=existing.state,
-        )
+        ) if (
+            _reason_value(existing.reason_code, existing.reason_label)
+            != _reason_value(reason_code, reason_label)
+            or existing.actual_quantity != actual_quantity
+            or existing.lots != lots
+        ) else existing.state
         with self._connect() as connection:
             connection.execute(
                 """
@@ -275,7 +293,7 @@ class Database:
                     actual_quantity=case.actual_quantity,
                     lots=lots,
                     previous_state=case.state,
-                )
+                ) if case.lots != lots else case.state
                 connection.execute(
                     "UPDATE cases SET state = ?, updated_at = ? WHERE id = ?",
                     (state, now, case.id),
@@ -347,18 +365,24 @@ class Database:
             raise KeyError(case_id)
         if decision == "exclude":
             return self.exclude_case(case_id, "HIS data changed before export")
-        if prescription is None:
-            raise ValueError("The latest HIS order is unavailable.")
         now = _now()
         if decision == "keep":
             with self._connect() as connection:
-                connection.execute(
-                    "UPDATE cases SET source_fingerprint = ?, updated_at = ? WHERE id = ?",
-                    (_fingerprint_json(prescription), now, case_id),
-                )
+                if prescription is None:
+                    connection.execute(
+                        "UPDATE cases SET his_missing_acknowledged = 1, updated_at = ? WHERE id = ?",
+                        (now, case_id),
+                    )
+                else:
+                    connection.execute(
+                        "UPDATE cases SET source_fingerprint = ?, his_missing_acknowledged = 0, updated_at = ? WHERE id = ?",
+                        (_fingerprint_json(prescription), now, case_id),
+                    )
             return self.get_case(case_id)  # type: ignore[return-value]
         if decision != "latest":
             raise ValueError("Unknown HIS resolution.")
+        if prescription is None:
+            raise ValueError("The latest HIS order is unavailable.")
 
         actual_quantity = existing.actual_quantity
         lots = existing.lots
@@ -379,7 +403,7 @@ class Database:
                 SET medical_record_number = ?, patient_name = ?, patient_id = ?, birth_date = ?, sex = ?,
                     report_date = ?, doctor_id = ?, medication_id = ?, medication_name = ?,
                     official_material = ?, source_quantity = ?, actual_quantity = ?, state = ?,
-                    source_fingerprint = ?, updated_at = ?
+                    source_fingerprint = ?, his_missing_acknowledged = 0, updated_at = ?
                 WHERE id = ?
                 """,
                 (
@@ -499,7 +523,12 @@ class Database:
                 (case.id,),
             ).fetchall()
         return CaseRecord(
-            **{**case.__dict__, "lots": tuple(LotAllocation(row["lot_number"], int(row["quantity"])) for row in lots)}
+            **{
+                **case.__dict__,
+                "lots": tuple(
+                    LotAllocation(row["lot_number"], int(row["quantity"])) for row in lots
+                ),
+            }
         )
 
     def ensure_case(self, prescription: Prescription) -> CaseRecord:
@@ -558,21 +587,33 @@ class Database:
                 case_id = existing.id
                 old_reason = _reason_value(existing.reason_code, existing.reason_label)
                 new_reason = _reason_value(reason_code, reason_label)
-                state = derive_state(
-                    reason_code=reason_code,
-                    actual_quantity=existing.actual_quantity,
-                    lots=existing.lots,
-                    previous_state=existing.state,
+                reason_changed = old_reason != new_reason
+                state = (
+                    derive_state(
+                        reason_code=reason_code,
+                        actual_quantity=existing.actual_quantity,
+                        lots=existing.lots,
+                        previous_state=existing.state,
+                    )
+                    if reason_changed
+                    else existing.state
                 )
                 connection.execute(
                     """
                     UPDATE cases
-                    SET reason_code = ?, reason_label = ?, state = ?, exclusion_reason = NULL, updated_at = ?
+                    SET reason_code = ?, reason_label = ?, state = ?, exclusion_reason = ?, updated_at = ?
                     WHERE id = ?
                     """,
-                    (reason_code, reason_label, state, now, case_id),
+                    (
+                        reason_code,
+                        reason_label,
+                        state,
+                        existing.exclusion_reason if state == EXCLUDED else None,
+                        now,
+                        case_id,
+                    ),
                 )
-                if old_reason != new_reason:
+                if reason_changed:
                     connection.execute(
                         """
                         INSERT INTO change_history
@@ -631,6 +672,7 @@ def _case_from_row(row: sqlite3.Row) -> CaseRecord:
         source_fingerprint=_fingerprint_from_json(row["source_fingerprint"]),
         created_at=row["created_at"],
         updated_at=row["updated_at"],
+        his_missing_acknowledged=bool(row["his_missing_acknowledged"]),
     )
 
 

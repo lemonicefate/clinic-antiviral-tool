@@ -140,3 +140,41 @@ def test_exclude_and_reinclude_returns_case_to_its_derived_state(tmp_path):
     assert reinclude.status_code == 200
     assert "Case included again." in reinclude.text
     assert database.get_case(case.id).state == MISSING_REASON
+
+
+def test_excluded_view_only_shows_excluded_cases(tmp_path):
+    first = Prescription(
+        **{**make_prescription().__dict__, "source_id": "EXCLUDED", "patient_name": "Excluded Patient"}
+    )
+    second = Prescription(
+        **{**make_prescription().__dict__, "source_id": "VISIBLE", "patient_name": "Visible Patient"}
+    )
+    client, database = make_client(tmp_path, [first, second])
+    client.post(
+        "/pharmacy/scan",
+        data={"scan_mode": "date", "scan_date": "2026-10-09", "operator": "P001"},
+    )
+    excluded = database.get_case_by_source_id(first.source_id)
+    client.post(
+        "/pharmacy/exclude",
+        data={"case_id": str(excluded.id), "reason": "duplicate"},
+    )
+
+    response = client.get("/pharmacy", params={"view": "excluded"})
+
+    assert first.patient_name in response.text
+    assert second.patient_name not in response.text
+
+
+def test_non_normal_his_treatment_flag_is_visible_to_pharmacy(tmp_path):
+    item = make_prescription()
+    item = Prescription(**{**item.__dict__, "treat": "C"})
+    client, database = make_client(tmp_path, [item])
+    client.post(
+        "/pharmacy/scan",
+        data={"scan_mode": "date", "scan_date": "2026-10-09", "operator": "P001"},
+    )
+
+    response = client.get("/pharmacy")
+
+    assert "HIS treatment flag C requires pharmacist review" in response.text

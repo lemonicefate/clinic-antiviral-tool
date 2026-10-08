@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import shutil
-from datetime import date
-from pathlib import Path
+import sqlite3
+from datetime import date, datetime, timezone
 from itertools import zip_longest
+from pathlib import Path
 from urllib.parse import urlencode
-from datetime import datetime, timezone
 
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
@@ -17,6 +17,7 @@ from app.config import Settings
 from app.cases import (
     EXCLUSION_REASONS,
     CaseFieldError,
+    LotAllocation,
     MixedMedicationBatchError,
     parse_actual_quantity,
     parse_lots,
@@ -58,6 +59,7 @@ def create_app(
         action: str = "",
         doctor_id: str = "",
         mrn: str = "",
+        source_id: str = "",
         success: str = "",
     ) -> HTMLResponse:
         prescription = None
@@ -71,10 +73,17 @@ def create_app(
                     prescription = reader.most_recent(doctor_id.strip()) if doctor_id.strip() else None
                 elif action == "mrn":
                     prescriptions = reader.find_by_mrn(mrn.strip(), doctor_id.strip() or None)
-                    prescription = prescriptions[0] if prescriptions else None
+                    if source_id.strip():
+                        prescription = next(
+                            (item for item in prescriptions if item.source_id == source_id.strip()),
+                            None,
+                        )
+                    elif len(prescriptions) == 1:
+                        prescription = prescriptions[0]
                 else:
                     error = "Unknown doctor action. Error: HIS_READ_002"
-                if action in {"recent", "mrn"} and prescription is None and error is None:
+                ambiguous_mrn = action == "mrn" and len(prescriptions) > 1 and not source_id.strip()
+                if action in {"recent", "mrn"} and prescription is None and error is None and not ambiguous_mrn:
                     error = "No matching antiviral prescription was found. Error: HIS_READ_002"
                 if prescription is not None and error is None:
                     reason_options = load_reason_options(settings.template_path)
@@ -129,7 +138,8 @@ def create_app(
                     if (
                         existing_case
                         and existing_case.state == "confirmed"
-                        and existing_case.reason_code != selected.code
+                        and (existing_case.reason_code, existing_case.reason_label)
+                        != (selected.code, selected.label)
                         and confirm_edit != "yes"
                     ):
                         return templates.TemplateResponse(
@@ -230,14 +240,19 @@ def create_app(
         except TemplateCompatibilityError as exc:
             reason_options = []
             error = f"{exc.message} Error: {exc.code}"
-        cases = database.list_cases(
-            include_completed=view == "all",
-            include_excluded=view in {"all", "excluded"},
-            report_date=parsed_date,
-            state=state or None,
-            doctor_id=doctor_id.strip() or None,
-            medication_id=medication_id.strip() or None,
-        )
+        try:
+            cases = database.list_cases(
+                include_completed=view == "all",
+                include_excluded=view in {"all", "excluded"},
+                report_date=parsed_date,
+                state="excluded" if view == "excluded" else state or None,
+                doctor_id=doctor_id.strip() or None,
+                medication_id=medication_id.strip() or None,
+            )
+        except Exception:
+            logger.exception("Pharmacy case list failed")
+            cases = []
+            error = "The cases could not be loaded. Error: DB_001"
         return templates.TemplateResponse(
             request=request,
             name="pharmacy.html",
@@ -319,6 +334,9 @@ def create_app(
             return render_pharmacy(request, error=f"{exc.message} Error: {exc.code}")
         except ValueError:
             return render_pharmacy(request, error="Enter a valid scan date or range. Error: HIS_RANGE_002")
+        except sqlite3.Error:
+            logger.exception("Database write failed during HIS scan")
+            return render_pharmacy(request, error="The scan could not be saved. Error: DB_001")
         except Exception:
             logger.exception("Unexpected pharmacy scan failure")
             return render_pharmacy(request, error="The scan could not be completed. Error: HIS_READ_001")
@@ -348,7 +366,13 @@ def create_app(
                 selected_label = selected.label
             quantity = parse_actual_quantity(actual_quantity)
             lots = parse_lots(zip_longest(lot_number, lot_quantity, fillvalue=""))
-            if current_case.state == "confirmed" and confirm_edit != "yes":
+            reporting_changed = (
+                (current_case.reason_code, current_case.reason_label)
+                != (selected_code, selected_label)
+                or current_case.actual_quantity != quantity
+                or current_case.lots != lots
+            )
+            if current_case.state == "confirmed" and reporting_changed and confirm_edit != "yes":
                 return templates.TemplateResponse(
                     request=request,
                     name="confirmed-warning.html",
@@ -391,8 +415,36 @@ def create_app(
         case_ids: list[int] = Form(default=[]),
         lot_number: str = Form(""),
         operator: str = Form(""),
+        confirm_edit: str = Form(""),
     ) -> HTMLResponse:
         try:
+            selected_cases = [database.get_case(case_id) for case_id in dict.fromkeys(case_ids)]
+            if any(case is None for case in selected_cases):
+                raise KeyError("case")
+            normalized_lot = lot_number.strip()
+            confirmed_changes = [
+                case
+                for case in selected_cases
+                if case is not None
+                and case.state == "confirmed"
+                and normalized_lot
+                and case.actual_quantity is not None
+                and case.lots != (LotAllocation(normalized_lot, case.actual_quantity),)
+            ]
+            if confirmed_changes and confirm_edit != "yes":
+                return templates.TemplateResponse(
+                    request=request,
+                    name="batch-confirmed-warning.html",
+                    context={
+                        "request": request,
+                        "cases": confirmed_changes,
+                        "case_ids": case_ids,
+                        "lot_number": lot_number,
+                        "operator": operator,
+                        "error": None,
+                        "success": None,
+                    },
+                )
             database.batch_assign_lot(
                 case_ids,
                 lot_number=lot_number,
@@ -419,16 +471,27 @@ def create_app(
         operator = str(form.get("operator") or "pharmacy").strip() or "pharmacy"
         if not selected_ids:
             return render_pharmacy(request, error="Choose at least one case for export. Error: EXPORT_002")
-        cases = [database.get_case(case_id) for case_id in selected_ids]
+        try:
+            cases = [database.get_case(case_id) for case_id in selected_ids]
+        except sqlite3.Error:
+            logger.exception("Database read failed during export selection")
+            return render_pharmacy(request, error="The selected cases could not be loaded. Error: DB_001")
         if any(case is None for case in cases):
             return render_pharmacy(request, error="A selected case no longer exists. Error: DB_001")
         cases = [case for case in cases if case is not None]
         differences = []
-        for case in cases:
-            current = reader.get(case.source_id)
-            changes = _his_changes(case, current)
-            if changes:
-                differences.append({"case": case, "current": current, "changes": changes})
+        try:
+            for case in cases:
+                current = reader.get(case.source_id)
+                changes = _his_changes(case, current)
+                if changes:
+                    differences.append({"case": case, "current": current, "changes": changes})
+        except HisReadError as exc:
+            logger.warning("HIS recheck failed code=%s", exc.code)
+            return render_pharmacy(request, error=f"{exc.message} Error: {exc.code}")
+        except Exception:
+            logger.exception("Unexpected HIS recheck failure")
+            return render_pharmacy(request, error="The HIS recheck failed. Error: HIS_READ_001")
         unresolved = []
         for difference in differences:
             decision = str(form.get(f"resolution_{difference['case'].id}") or "").strip()
@@ -456,7 +519,11 @@ def create_app(
         if unresolved:
             return _render_his_differences(request, unresolved, selected_ids, operator)
 
-        refreshed_cases = [database.get_case(case_id) for case_id in selected_ids]
+        try:
+            refreshed_cases = [database.get_case(case_id) for case_id in selected_ids]
+        except sqlite3.Error:
+            logger.exception("Database refresh failed during export")
+            return render_pharmacy(request, error="The selected cases could not be refreshed. Error: DB_001")
         refreshed_cases = [case for case in refreshed_cases if case is not None]
         uploaded_selected = any(case.state == "uploaded" for case in refreshed_cases)
         valid_cases = []
@@ -507,7 +574,11 @@ def create_app(
 
     @app.get("/pharmacy/export/{batch_id}/download")
     def download_export(batch_id: int) -> Response:
-        batch = database.get_export_batch(batch_id)
+        try:
+            batch = database.get_export_batch(batch_id)
+        except sqlite3.Error:
+            logger.exception("Database read failed during export download")
+            return HTMLResponse("The export batch could not be loaded. Error: DB_001", status_code=500)
         if not batch:
             return HTMLResponse("The export batch was not found. Error: EXPORT_002", status_code=404)
         path = settings.app_data_path / "exports" / str(batch["filename"])
@@ -517,13 +588,13 @@ def create_app(
 
     @app.post("/pharmacy/batch/{batch_id}/uploaded", response_class=HTMLResponse)
     def mark_uploaded(request: Request, batch_id: int) -> HTMLResponse:
-        batch = database.get_export_batch(batch_id)
-        if not batch:
-            return render_pharmacy(request, error="The export batch was not found. Error: DB_001")
-        source_path = settings.app_data_path / "exports" / str(batch["filename"])
-        if not source_path.exists():
-            return render_pharmacy(request, error="The generated workbook is missing. Error: EXPORT_002")
         try:
+            batch = database.get_export_batch(batch_id)
+            if not batch:
+                return render_pharmacy(request, error="The export batch was not found. Error: DB_001")
+            source_path = settings.app_data_path / "exports" / str(batch["filename"])
+            if not source_path.exists():
+                return render_pharmacy(request, error="The generated workbook is missing. Error: EXPORT_002")
             if batch["uploaded"]:
                 return render_pharmacy(request, message="Batch is already marked uploaded.")
             destination = _uploaded_destination(settings.uploaded_path, source_path.name)
@@ -543,6 +614,9 @@ def create_app(
             return render_pharmacy(request, error="Choose existing cases to confirm. Error: DB_001")
         except ValueError as error:
             return render_pharmacy(request, error=f"{error} Error: CASE_STATE_001")
+        except Exception:
+            logger.exception("Unexpected case confirmation failure")
+            return render_pharmacy(request, error="The cases could not be confirmed. Error: DB_001")
 
     @app.post("/pharmacy/exclude", response_class=HTMLResponse)
     def exclude_pharmacy_case(
@@ -563,6 +637,9 @@ def create_app(
             return RedirectResponse("/pharmacy?message=Case+excluded.", status_code=303)
         except KeyError:
             return render_pharmacy(request, error="The case no longer exists. Error: DB_001")
+        except Exception:
+            logger.exception("Unexpected case exclusion failure")
+            return render_pharmacy(request, error="The case could not be excluded. Error: DB_001")
 
     @app.post("/pharmacy/reinclude", response_class=HTMLResponse)
     def reinclude_pharmacy_case(request: Request, case_id: int = Form(...)) -> HTMLResponse:
@@ -571,13 +648,21 @@ def create_app(
             return RedirectResponse("/pharmacy?message=Case+included+again.", status_code=303)
         except KeyError:
             return render_pharmacy(request, error="The case no longer exists. Error: DB_001")
+        except Exception:
+            logger.exception("Unexpected case reinclusion failure")
+            return render_pharmacy(request, error="The case could not be included. Error: DB_001")
 
     @app.get("/pharmacy/history/{case_id}", response_class=HTMLResponse)
     def pharmacy_history(request: Request, case_id: int) -> HTMLResponse:
+        try:
+            history = database.list_history(case_id)
+        except sqlite3.Error:
+            logger.exception("Database read failed during case history")
+            return render_pharmacy(request, error="The case history could not be loaded. Error: DB_001")
         return templates.TemplateResponse(
             request=request,
             name="history.html",
-            context={"request": request, "case_id": case_id, "history": database.list_history(case_id)},
+            context={"request": request, "case_id": case_id, "history": history},
         )
 
     def _render_his_differences(
@@ -605,6 +690,8 @@ def create_app(
 
 def _his_changes(case, current) -> list[dict[str, str]]:
     if current is None:
+        if case.his_missing_acknowledged:
+            return []
         return [{"field": "HIS order", "before": "saved case", "after": "not found"}]
     names = [
         "medical record number",

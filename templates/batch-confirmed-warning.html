@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}確認批號修改{% endblock %}
+{% block content %}
+<section class="panel">
+  <h2>確認批號修改</h2>
+  <div class="message error" role="alert">This case has already been confirmed in SMIS. Changing it may require reporting again.</div>
+  <p>所選案件中有已在 SMIS 確認完成的案件：</p>
+  <ul>{% for case in cases %}<li>{{ case.patient_name }} · {{ case.medical_record_number }}</li>{% endfor %}</ul>
+  <form method="post" action="/pharmacy/batch-lot">
+    {% for case_id in case_ids %}<input type="hidden" name="case_ids" value="{{ case_id }}">{% endfor %}
+    <input type="hidden" name="lot_number" value="{{ lot_number }}">
+    <input type="hidden" name="operator" value="{{ operator }}">
+    <input type="hidden" name="confirm_edit" value="yes">
+    <button type="submit">Proceed with change</button>
+  </form>
+  <p><a href="/pharmacy?view=all">Cancel</a></p>
+</section>
+{% endblock %}

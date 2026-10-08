@@ -43,4 +43,30 @@
   {% endif %}
 </section>
 {% endif %}
+
+{% if prescriptions and not prescription %}
+<section class="panel">
+  <h2>請選擇處方</h2>
+  <p>同一病歷號找到多筆抗病毒處方，請確認日期與病人後選取正確的一筆。</p>
+  {% for candidate in prescriptions %}
+  <article class="candidate-card">
+    <dl>
+      <dt>姓名</dt><dd>{{ candidate.patient_name }}</dd>
+      <dt>病歷號</dt><dd>{{ candidate.medical_record_number }}</dd>
+      <dt>日期</dt><dd>{{ candidate.report_date }}</dd>
+      <dt>藥品</dt><dd>{{ candidate.medication_name }}</dd>
+      <dt>數量</dt><dd>{{ candidate.source_quantity }} {{ candidate.unit }}</dd>
+      <dt>處方識別</dt><dd>{{ candidate.source_id }}</dd>
+    </dl>
+    <form method="get" action="/doctor">
+      <input type="hidden" name="action" value="mrn">
+      <input type="hidden" name="doctor_id" value="{{ doctor_id }}">
+      <input type="hidden" name="mrn" value="{{ mrn }}">
+      <input type="hidden" name="source_id" value="{{ candidate.source_id }}">
+      <button type="submit">選取這筆處方</button>
+    </form>
+  </article>
+  {% endfor %}
+</section>
+{% endif %}
 {% endblock %}

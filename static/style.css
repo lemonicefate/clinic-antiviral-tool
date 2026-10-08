@@ -22,7 +22,9 @@ th, td { padding: .65rem; border-bottom: 1px solid #e2e7eb; text-align: left; ve
 .exclude-form { display: grid; gap: .3rem; margin-top: .5rem; }
 .export-summary { border-left: 4px solid #165d9c; }
 .diff-card { border: 1px solid #d9e0e7; border-radius: 6px; padding: 1rem; margin: 1rem 0; }
+.candidate-card { border: 1px solid #d9e0e7; border-radius: 6px; padding: 1rem; margin: 1rem 0; }
 .link-button { padding: 0; border: 0; background: transparent; color: #165d9c; text-decoration: underline; }
+.treat-warning { color: #8a1c1c; font-weight: 700; }
 label { display: grid; gap: .3rem; font-weight: 600; }
 input, select, button { font: inherit; padding: .5rem .65rem; border: 1px solid #aab7c4; border-radius: 4px; }
 button { cursor: pointer; background: #165d9c; color: white; border-color: #165d9c; }

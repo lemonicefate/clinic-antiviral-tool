@@ -152,6 +152,7 @@ class DbfHisReader:
                 med1=_value(item, "MED1", "MEDICATION", "DRUG"),
                 itemn=_value(item, "ITEMN", "ITEM_NO", "ITEMNO"),
                 labnum=_value(inventory_row, "LABNUM", "LAB_NO", "NHI_CODE"),
+                mappings=self.mappings,
             )
             if mapping is None:
                 continue
@@ -188,9 +189,9 @@ class DbfHisReader:
     def _find_table(self, table_name: str) -> Path | None:
         if self.mirror_path is None:
             return None
-        target = f"{table_name.lower()}.dbf"
-        for path in self.mirror_path.rglob("*.dbf"):
-            if path.name.lower() == target:
+        target = f"{table_name.casefold()}.dbf"
+        for path in self.mirror_path.rglob("*"):
+            if path.is_file() and path.name.casefold() == target:
                 return path
         return None
 
