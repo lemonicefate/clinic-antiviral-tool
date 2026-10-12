@@ -316,6 +316,15 @@ Provide simple operational scripts such as:
 
 The central service should be configured to start with Windows.
 
+For production, the central application host may read an external HIS host over an explicit UNC/SMB path. In the current workgroup deployment:
+
+- the application host and HIS host are separate Windows computers;
+- the server uses a dedicated local application task account and an existing HIS local read-only account;
+- the HIS credential is stored in Windows Credential Manager for the task account, not in `.env`;
+- the client remains unauthenticated; these are operating-system deployment credentials, not application login credentials;
+- HIS onboarding is verify-only and MUST NOT automatically create or modify the HIS account, share, or ACL;
+- the normal `uvicorn` process starts with Windows through Task Scheduler; no EXE or service wrapper is required for MVP.
+
 No EXE packaging is required for MVP.
 
 No Docker is required.
@@ -379,6 +388,8 @@ The application MUST NEVER:
 - open them using writable modes
 
 Production access should use OS/share permissions that are read-only.
+
+The production onboarding boundary is explicit. The application host may create its own local task account, runtime directories, scheduled task, and optional host firewall rule. The HIS host setup remains a manual administrator action followed by a read-only verification. A failed HIS verification MUST stop onboarding; the application MUST NOT attempt an automatic repair.
 
 ## 6.2 Development HIS Mirror
 
