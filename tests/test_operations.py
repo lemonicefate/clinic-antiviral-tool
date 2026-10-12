@@ -53,6 +53,8 @@ def test_host_onboarding_assets_are_present_and_his_verification_is_read_only():
     assert "Task Scheduler" in readme
     assert "HIS_MIRROR_PATH" in readme
     assert "MUST NOT" in readme
+    assert "## English" in readme
+    assert "## 繁體中文" in readme
 
     start_launcher = (scripts / "start_app_host.ps1").read_text(encoding="utf-8")
     start_bat = (scripts / "start.bat").read_text(encoding="utf-8")
