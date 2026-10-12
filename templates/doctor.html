@@ -1,0 +1,146 @@
+{% extends "base.html" %}
+{% block title %}醫師回報{% endblock %}
+{% block content %}
+{% set index_state_labels = {
+  "not_started": "尚未開始",
+  "building": "建立中",
+  "ready": "已完成",
+  "stale": "需要更新",
+  "error": "建立失敗"
+} %}
+{% set index_phase_labels = {
+  "prepare": "準備讀取資料",
+  "headers": "讀取今日處方主檔",
+  "items": "配對抗病毒處方",
+  "patients": "補齊病人資料",
+  "finalize": "整理索引",
+  "incremental_read": "讀取新增資料",
+  "incremental_headers": "配對新增處方",
+  "incremental_items": "整理新增藥品",
+  "incremental_patients": "補齊新增病人資料",
+  "incremental_finalize": "完成快速更新",
+  "ready": "已完成",
+  "stale": "需要完整更新",
+  "error": "建立失敗"
+} %}
+
+<div class="doctor-workspace">
+  <div class="doctor-main">
+    <section class="panel">
+      <h2>醫師回報</h2>
+      <form method="get" action="/doctor" class="lookup-form">
+        <label>醫師代號
+          <input name="doctor_id" value="{{ doctor_id }}" required autocomplete="off">
+        </label>
+        <button type="submit" name="action" value="recent" class="his-search">載入最近一筆（今日）</button>
+        <button type="submit" name="action" value="recent_hour" class="his-search secondary">只看最近一小時</button>
+        <label>病歷號
+          <input name="mrn" value="{{ mrn }}" autocomplete="off">
+        </label>
+        <button type="submit" name="action" value="mrn">依病歷號搜尋</button>
+      </form>
+    </section>
+
+    {% if prescription %}
+    <section class="panel patient-card">
+      <h2>請確認病人</h2>
+      <dl>
+        <dt>姓名</dt><dd>{{ prescription.patient_name }}</dd>
+        <dt>病歷號</dt><dd>{{ prescription.medical_record_number }}</dd>
+        <dt>身分識別</dt><dd>{{ prescription.patient_id }}</dd>
+        <dt>日期</dt><dd>{{ prescription.report_date }}</dd>
+        {% if prescription.report_time %}<dt>時間</dt><dd>{{ prescription.report_time }}</dd>{% endif %}
+        <dt>藥品</dt><dd>{{ prescription.medication_name }}</dd>
+        <dt>數量</dt><dd>{{ prescription.source_quantity }} {{ prescription.unit }}</dd>
+      </dl>
+      {% if reason_options %}
+      <form method="post" action="/doctor/save" class="save-form">
+        <input type="hidden" name="source_id" value="{{ prescription.source_id }}">
+        <input type="hidden" name="doctor_id" value="{{ doctor_id or prescription.doctor_id }}">
+        <label>用藥原因
+          <select name="reason_code" required>
+            <option value="">請選擇正式用藥原因</option>
+            {% for option in reason_options %}
+            <option value="{{ option.code }}" {% if (selected_reason_code or (existing_case and existing_case.reason_code)) == option.code %}selected{% endif %}>{{ option.code }} - {{ option.label }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <button type="submit">儲存</button>
+      </form>
+      {% endif %}
+    </section>
+    {% endif %}
+
+    {% if prescriptions and not prescription %}
+    <section class="panel">
+      <h2>請選擇處方</h2>
+      <p>{% if action in ["recent", "recent_hour"] %}今日找到多筆抗病毒處方，請確認時間與病人後選取正確的一筆。{% else %}同一病歷號找到多筆抗病毒處方，請確認日期與病人後選取正確的一筆。{% endif %}</p>
+      {% for candidate in prescriptions %}
+      <article class="candidate-card">
+        <dl>
+          <dt>姓名</dt><dd>{{ candidate.patient_name }}</dd>
+          <dt>病歷號</dt><dd>{{ candidate.medical_record_number }}</dd>
+          <dt>身分識別</dt><dd>{{ candidate.patient_id }}</dd>
+          <dt>日期</dt><dd>{{ candidate.report_date }}</dd>
+          {% if candidate.report_time %}<dt>時間</dt><dd>{{ candidate.report_time }}</dd>{% endif %}
+          <dt>藥品</dt><dd>{{ candidate.medication_name }}</dd>
+          <dt>數量</dt><dd>{{ candidate.source_quantity }} {{ candidate.unit }}</dd>
+          <dt>處方識別</dt><dd>{{ candidate.source_id }}</dd>
+        </dl>
+        <form method="get" action="/doctor">
+          <input type="hidden" name="action" value="{{ 'recent_hour' if action == 'recent_hour' else ('recent' if action == 'recent' else 'mrn') }}">
+          <input type="hidden" name="doctor_id" value="{{ doctor_id }}">
+          <input type="hidden" name="mrn" value="{{ mrn }}">
+          <input type="hidden" name="source_id" value="{{ candidate.source_id }}">
+          <button type="submit">選取這筆處方</button>
+        </form>
+      </article>
+      {% endfor %}
+    </section>
+    {% endif %}
+  </div>
+
+  <aside
+    class="panel index-panel"
+    data-index-status-url="/doctor/index-status"
+    data-index-state="{{ index_status.state }}"
+    aria-labelledby="today-index-title"
+  >
+    <div class="index-heading">
+      <div>
+        <h2 id="today-index-title">今日索引</h2>
+        <p class="index-message muted" id="today-index-message" role="status" aria-live="polite">{{ index_status.message }}</p>
+      </div>
+      <span class="index-state" id="today-index-state" data-state="{{ index_status.state }}">{{ index_state_labels.get(index_status.state, index_status.state) }}</span>
+    </div>
+
+    <div class="index-progress-row">
+      <progress
+        id="today-index-progress"
+        max="100"
+        aria-label="今日索引建立進度"
+        {% if index_status.progress_mode == "determinate" %}value="{{ index_status.progress }}"{% endif %}
+      >{% if index_status.progress_mode == "determinate" %}{{ index_status.progress }}%{% else %}處理中{% endif %}</progress>
+      <span class="index-progress-value" id="today-index-progress-value">{% if index_status.progress_mode == "determinate" %}{{ index_status.progress }}%{% else %}處理中{% endif %}</span>
+    </div>
+    <p class="index-phase muted" id="today-index-phase">{% if index_status.phase and index_status.phase != "ready" %}階段：{{ index_phase_labels.get(index_status.phase, index_status.phase) }}{% endif %}</p>
+    <p class="index-counts muted" id="today-index-counts">{% if index_status.total %}已處理 {{ index_status.processed }} / {{ index_status.total }} 筆{% endif %}</p>
+    <p class="index-times muted" id="today-index-times">首次完成：{{ index_status.first_completed_at or "尚未完成" }}；最近完成：{{ index_status.completed_at or "尚未完成" }}</p>
+
+    <p id="today-index-success" class="message success index-success" role="status"{% if index_status.state != "ready" %} hidden{% endif %}>今日索引已完成，可以開始搜尋。</p>
+    <p id="today-index-error" class="message error index-error" role="alert"{% if not index_status.error %} hidden{% endif %}>{{ index_status.error or "" }}</p>
+
+    <details class="index-details">
+      <summary>索引怎麼加速搜尋？</summary>
+      <p class="muted index-help">第一次建立會讀取今天的 HIS 資料；之後搜尋只檢查是否有新增資料，有新增時只補讀尾端。儲存前仍會重新讀取 HIS 確認。</p>
+      <p class="muted index-help">百分比依各階段讀取量估算；準備與收尾階段顯示「處理中」是正常的。</p>
+      <p class="muted index-help">「最近一小時」只使用 HIS 有提供時間的資料；若時間缺漏，請改用「今日」搜尋。</p>
+      <pre class="index-flow" aria-label="今日索引流程">啟動伺服器 → 建立今日索引 → 搜尋時快速檢查 → 只補讀新增資料</pre>
+    </details>
+
+    <form method="post" action="/doctor/index/build">
+      <button id="today-index-rebuild" type="submit" class="index-action{% if index_status.state != 'ready' %} highlight{% endif %}">首次建立／完整更新今日索引</button>
+    </form>
+  </aside>
+</div>
+{% endblock %}

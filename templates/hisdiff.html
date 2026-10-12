@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}HIS 差異確認{% endblock %}
+{% block content %}
+<section class="panel">
+  <h2>匯出前 HIS 差異確認</h2>
+  <p>下列案件在建立後有重要 HIS 欄位變更。請逐筆選擇處理方式。</p>
+  {% if error %}<div class="message error" role="alert">{{ error }}</div>{% endif %}
+  <form method="post" action="/pharmacy/export">
+    {% for case_id in selected_ids %}<input type="hidden" name="export_case_ids" value="{{ case_id }}">{% endfor %}
+    <input type="hidden" name="operator" value="{{ operator }}">
+    {% for difference in differences %}
+    <article class="diff-card">
+      <h3>案件 {{ difference.case.id }} · {{ difference.case.patient_name }}</h3>
+      <table><thead><tr><th>欄位</th><th>原值</th><th>最新 HIS</th></tr></thead><tbody>
+        {% for change in difference.changes %}<tr><td>{{ change.field }}</td><td>{{ change.before }}</td><td>{{ change.after }}</td></tr>{% endfor %}
+      </tbody></table>
+      <label>處理方式
+        <select name="resolution_{{ difference.case.id }}" required>
+          <option value="">請選擇</option>
+          <option value="latest" {% if not difference.current %}disabled{% endif %}>Use latest HIS data</option>
+          <option value="keep">Keep current reporting data</option>
+          <option value="exclude">Exclude case</option>
+        </select>
+      </label>
+    </article>
+    {% endfor %}
+    <button type="submit">繼續匯出</button>
+  </form>
+</section>
+{% endblock %}

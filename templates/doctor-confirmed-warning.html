@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}確認已完成案件修改{% endblock %}
+{% block content %}
+<section class="panel">
+  <h2>確認修改</h2>
+  <div class="message error" role="alert">This case has already been confirmed in SMIS. Changing it may require reporting again.</div>
+  <p>{{ case.patient_name }} · {{ case.medical_record_number }}</p>
+  <form method="post" action="/doctor/save">
+    <input type="hidden" name="source_id" value="{{ source_id }}">
+    <input type="hidden" name="doctor_id" value="{{ doctor_id }}">
+    <input type="hidden" name="reason_code" value="{{ reason_code }}">
+    <input type="hidden" name="confirm_edit" value="yes">
+    <button type="submit">Proceed with change</button>
+  </form>
+  <p><a href="/doctor">Cancel</a></p>
+</section>
+{% endblock %}
