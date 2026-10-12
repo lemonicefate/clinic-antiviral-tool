@@ -38,3 +38,23 @@ Discarding the in-memory today's index and reading the known source tables again
 
 **HIS 重新確認**:
 A fresh read of the selected prescription from the read-only HIS source before saving or exporting, so a cached or indexed candidate cannot silently become stale authority.
+
+**客戶端**:
+A clinic-LAN browser user who operates the `/doctor` or `/pharmacy` workflow; this context has no application login, password, or role-based access control.
+_Avoid_: 應用程式帳號, 使用者登入
+
+**伺服器端 HIS 唯讀服務帳號**:
+An operating-system account on the HIS host whose credential is used by the central application host to read the HIS source, separate from client users and restricted to the required HIS data only.
+_Avoid_: 醫師帳號, 藥師帳號, 共用管理員帳號
+
+**應用程式主機工作帳號**:
+An operating-system account local to the application host that runs the scheduled task and owns the stored HIS credential; it is not the HIS account and is not a client identity.
+_Avoid_: HIS 帳號, 客戶端帳號, 管理員帳號
+
+**HIS 唯讀資料分享**:
+The network-accessible HIS data boundary from which the server may list and read reporting source files but may not create, modify, rename, or delete them.
+_Avoid_: HIS 主機登入, HIS 管理分享
+
+**HIS 主機引導式驗證**:
+A read-only onboarding procedure that checks the existing HIS account, share, permissions, and source tables, then tells an administrator what to do next without changing HIS settings.
+_Avoid_: 自動 Provision, 遠端修復 HIS, 自動調整 ACL
