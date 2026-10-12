@@ -180,10 +180,49 @@ If the check fails, do not start the task. Check the computer name, the stored c
 
 ## Phase 4: start and smoke test
 
-Run these commands on the application host.
+Run the start script on the application host.
+
+```text
+operator
+   |
+   +--> scripts\start.bat
+          |
+          +--> Windows Task Scheduler
+                 |
+                 +--> APP01\svc_clinic_tool
+                        |
+                        +--> Credential Manager -> HIS01\svc_clinic_his_ro
+                               |
+                               +--> \\HIS01\HISROOT (read only)
+```
+
+The start script performs these checks before it starts the task:
+
+- the task exists and is enabled;
+- the task runs as `svc_clinic_tool`;
+- the task action is this repository's `.venv` Python and `uvicorn app.main:app`;
+- the local application port opens.
+
+The script does not ask for, print, or copy a password. Windows starts the task with the password stored when onboarding registered the task. The application process then uses the HIS credential stored for `svc_clinic_tool`.
+
+Use either command:
 
 ```powershell
-Start-ScheduledTask -TaskName 'ClinicAntiviralTool'
+Set-Location C:\clinic-antiviral-tool
+.\scripts\start_app_host.ps1 -RepoPath (Get-Location)
+```
+
+or:
+
+```text
+scripts\start.bat
+```
+
+The PowerShell launcher is the detailed path. The BAT file is the operator shortcut.
+
+Check the task and local port:
+
+```powershell
 Get-ScheduledTaskInfo -TaskName 'ClinicAntiviralTool' |
   Select-Object LastRunTime, LastTaskResult, NextRunTime
 Test-NetConnection -ComputerName '127.0.0.1' -Port 8000
@@ -211,10 +250,10 @@ scripts\update.bat
 Start the task again after the update:
 
 ```powershell
-Start-ScheduledTask -TaskName 'ClinicAntiviralTool'
+scripts\start.bat
 ```
 
-`scripts\start.bat` is a foreground development command. It is not the production startup mechanism.
+`scripts\start.bat` is the production startup shortcut. It starts the registered task as `svc_clinic_tool`. It does not run `uvicorn` as the currently logged-in desktop user.
 
 ### Password policy
 

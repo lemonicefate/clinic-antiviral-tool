@@ -1,8 +1,9 @@
 @echo off
 setlocal
-cd /d "%~dp0.."
-if not exist ".venv\Scripts\python.exe" (
-  echo Python 3.12 virtual environment not found. Create it with: py -3.12 -m venv .venv
-  exit /b 1
+set "SCRIPT_DIR=%~dp0"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%start_app_host.ps1" -RepoPath "%SCRIPT_DIR%.."
+set "EXIT_CODE=%ERRORLEVEL%"
+if not "%EXIT_CODE%"=="0" (
+  echo The clinic antiviral tool did not start.
 )
-".venv\Scripts\python.exe" -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+exit /b %EXIT_CODE%

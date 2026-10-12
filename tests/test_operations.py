@@ -16,6 +16,7 @@ def test_windows_operations_scripts_and_template_note_are_present():
     root = Path(__file__).resolve().parent.parent
 
     assert (root / "scripts" / "start.bat").exists()
+    assert (root / "scripts" / "start_app_host.ps1").exists()
     assert (root / "scripts" / "stop.bat").exists()
     assert (root / "scripts" / "update.bat").exists()
     assert (root / "official-template" / "README.md").exists()
@@ -52,3 +53,11 @@ def test_host_onboarding_assets_are_present_and_his_verification_is_read_only():
     assert "Task Scheduler" in readme
     assert "HIS_MIRROR_PATH" in readme
     assert "MUST NOT" in readme
+
+    start_launcher = (scripts / "start_app_host.ps1").read_text(encoding="utf-8")
+    start_bat = (scripts / "start.bat").read_text(encoding="utf-8")
+    assert "Start-ScheduledTask" in start_launcher
+    assert "Credential Manager" in start_launcher
+    assert "uvicorn" in start_launcher
+    assert "start_app_host.ps1" in start_bat
+    assert "-m uvicorn app.main:app" not in start_bat

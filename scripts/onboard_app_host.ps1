@@ -245,7 +245,7 @@ try {
     Write-Host ("1. runas /user:{0} /profile powershell.exe" -f $qualifiedAccount)
     Write-Host ("2. .\scripts\store_his_credential.ps1 -Target <HIS_HOST> -RemoteUser <HIS_HOST>\svc_clinic_his_ro")
     Write-Host ("3. .\scripts\verify_his_access.ps1 -HisPath '{0}'" -f $HisPath)
-    Write-Host ("4. Start-ScheduledTask -TaskName '{0}'" -f $TaskName)
+    Write-Host "4. .\scripts\start.bat"
 }
 finally {
     if ($null -ne $plainPassword) {
