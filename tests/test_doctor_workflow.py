@@ -27,7 +27,7 @@ def make_prescription():
         patient_id="P001",
         birth_date=date(1980, 1, 2),
         sex="M",
-        report_date=date(2026, 10, 9),
+        report_date=date.today(),
         doctor_id="D001",
         medication_id="eraflu",
         medication_name="易剋冒膠囊",

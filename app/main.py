@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 import shutil
 import sqlite3
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from itertools import zip_longest
 from pathlib import Path
 from urllib.parse import urlencode
@@ -38,9 +39,20 @@ def create_app(
     settings = settings or Settings.from_env()
     reader = his_reader or DbfHisReader(settings.his_mirror_path)
     database = database or Database(settings.database_path)
-    app = FastAPI(title="Clinic Antiviral Tool")
     templates = Jinja2Templates(directory=str(settings.base_dir / "templates"))
     logger = configure_logging(settings.log_path)
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        starter = getattr(reader, "start_today_index_build", None)
+        if callable(starter):
+            try:
+                starter()
+            except Exception:
+                logger.exception("HIS today-index warmup could not start")
+        yield
+
+    app = FastAPI(title="Clinic Antiviral Tool", lifespan=lifespan)
     app.state.settings = settings
     app.state.his_reader = reader
     app.state.database = database
@@ -48,6 +60,39 @@ def create_app(
     static_path = settings.base_dir / "static"
     if static_path.exists():
         app.mount("/static", StaticFiles(directory=str(static_path)), name="static")
+
+    def index_status() -> dict[str, object]:
+        status_reader = getattr(reader, "index_status", None)
+        if callable(status_reader):
+            try:
+                status = dict(status_reader())
+                status.setdefault("phase", status.get("state", "ready"))
+                status.setdefault("processed", 0)
+                status.setdefault("total", 0)
+                status.setdefault(
+                    "progress_mode",
+                    "determinate" if status.get("progress") is not None else "indeterminate",
+                )
+                status.setdefault("updated_at", None)
+                return status
+            except Exception:
+                logger.exception("HIS index status failed")
+        # The in-memory reader used by development/tests has no DBF index;
+        # present it as immediately ready so the page remains useful.
+        return {
+            "state": "ready",
+            "progress": 100,
+            "message": "今日索引已完成",
+            "started_at": None,
+            "completed_at": None,
+            "first_completed_at": None,
+            "phase": "ready",
+            "processed": 0,
+            "total": 0,
+            "progress_mode": "determinate",
+            "updated_at": None,
+            "error": None,
+        }
 
     @app.get("/", include_in_schema=False)
     def home() -> RedirectResponse:
@@ -60,6 +105,7 @@ def create_app(
         doctor_id: str = "",
         mrn: str = "",
         source_id: str = "",
+        window: str = "day",
         success: str = "",
     ) -> HTMLResponse:
         prescription = None
@@ -67,10 +113,33 @@ def create_app(
         reason_options: list[ReasonOption] = []
         existing_case = None
         error = None
+        ambiguous_recent = False
         if action:
             try:
-                if action == "recent":
-                    prescription = reader.most_recent(doctor_id.strip()) if doctor_id.strip() else None
+                if action in {"recent", "recent_hour"}:
+                    lookup_window = "hour" if action == "recent_hour" else window
+                    recent_candidates = getattr(reader, "recent_candidates", None)
+                    if callable(recent_candidates) and doctor_id.strip():
+                        prescriptions = recent_candidates(
+                            doctor_id.strip(),
+                            # Once a candidate is selected, re-run the
+                            # same-day lookup without the moving one-hour
+                            # boundary so it cannot disappear between clicks.
+                            start_time=None if source_id.strip() else _recent_window_start(lookup_window),
+                        )
+                        if source_id.strip():
+                            prescription = next(
+                                (item for item in prescriptions if item.source_id == source_id.strip()),
+                                None,
+                            )
+                        elif len(prescriptions) == 1:
+                            prescription = prescriptions[0]
+                        else:
+                            ambiguous_recent = len(prescriptions) > 1
+                    elif doctor_id.strip():
+                        # Keep compatibility with small custom readers that
+                        # implement only the original protocol.
+                        prescription = reader.most_recent(doctor_id.strip())
                 elif action == "mrn":
                     prescriptions = reader.find_by_mrn(mrn.strip(), doctor_id.strip() or None)
                     if source_id.strip():
@@ -83,7 +152,9 @@ def create_app(
                 else:
                     error = "Unknown doctor action. Error: HIS_READ_002"
                 ambiguous_mrn = action == "mrn" and len(prescriptions) > 1 and not source_id.strip()
-                if action in {"recent", "mrn"} and prescription is None and error is None and not ambiguous_mrn:
+                if action in {"recent", "recent_hour", "mrn"} and prescription is None and error is None and not (
+                    ambiguous_mrn or ambiguous_recent
+                ):
                     error = "No matching antiviral prescription was found. Error: HIS_READ_002"
                 if prescription is not None and error is None:
                     reason_options = load_reason_options(settings.template_path)
@@ -103,15 +174,35 @@ def create_app(
                 "request": request,
                 "doctor_id": doctor_id,
                 "mrn": mrn,
+                "window": window,
                 "action": action,
                 "prescription": prescription,
                 "prescriptions": prescriptions,
+                "ambiguous_recent": ambiguous_recent,
                 "reason_options": reason_options,
                 "existing_case": existing_case,
                 "success": success,
                 "error": error,
+                "index_status": index_status(),
             },
         )
+
+    @app.get("/doctor/index-status")
+    def doctor_index_status() -> dict[str, object]:
+        return index_status()
+
+    @app.post("/doctor/index/build")
+    def rebuild_doctor_index() -> RedirectResponse:
+        starter = getattr(reader, "start_today_index_build", None)
+        if callable(starter):
+            try:
+                started = bool(starter(force=True))
+                message = "今日索引更新已開始。" if started else "今日索引正在更新中。"
+            except HisReadError as exc:
+                message = f"{exc.message} Error: {exc.code}"
+        else:
+            message = "目前資料來源不需要建立索引。"
+        return RedirectResponse(f"/doctor?{urlencode({'success': message})}", status_code=303)
 
     @app.post("/doctor/save", response_class=HTMLResponse)
     def save_doctor_case(
@@ -169,11 +260,14 @@ def create_app(
                             "request": request,
                             "doctor_id": doctor_id,
                             "mrn": "",
+                            "window": "day",
                             "action": "",
                             "prescription": None,
                             "prescriptions": [],
+                            "ambiguous_recent": False,
                             "reason_options": [],
                             "existing_case": None,
+                            "index_status": index_status(),
                             "success": "已儲存用藥原因。",
                             "error": None,
                         },
@@ -195,12 +289,15 @@ def create_app(
                 "request": request,
                 "doctor_id": doctor_id,
                 "mrn": prescription.medical_record_number if prescription else "",
+                "window": "day",
                 "action": "",
                 "prescription": prescription,
                 "prescriptions": [],
+                "ambiguous_recent": False,
                 "reason_options": reason_options,
                 "existing_case": existing_case,
                 "selected_reason_code": reason_code,
+                "index_status": index_status(),
                 "success": "",
                 "error": error,
             },
@@ -686,6 +783,15 @@ def create_app(
         )
 
     return app
+
+
+def _recent_window_start(window: str) -> time | None:
+    """Return the local-time lower bound for the optional one-hour shortcut."""
+    if window != "hour":
+        return None
+    now = datetime.now()
+    lower = now - timedelta(hours=1)
+    return lower.time() if lower.date() == now.date() else time.min
 
 
 def _his_changes(case, current) -> list[dict[str, str]]:

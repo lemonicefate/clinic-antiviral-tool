@@ -398,6 +398,16 @@ The mirror:
 
 - exists outside the repository where practical
 
+## 6.3 Today's index lifecycle
+
+The central server may build one volatile, in-memory index for today's matching antiviral prescriptions when the service starts. The doctor page shows the shared build progress and completion state to every client.
+
+Before a doctor lookup, the server performs a read-only metadata check. If the known DBF tables only grew by append-safe records, the index may read just the new tail records. If a table was replaced, edited in place, truncated, or otherwise cannot be proven append-safe, the index is marked stale and requires a complete rebuild; it must not guess.
+
+The index is a lookup acceleration only. It is never the final HIS authority: saving a doctor report or exporting a pharmacy report must re-read the selected prescription from the known read-only DBF source. The index and its cursors are held outside the HIS directory; no DBF, FPT, or CDX file is created or modified.
+
+This is request-triggered refresh plus one startup warmup, not a background HIS scanner. A recent-hour shortcut, when offered, is an in-memory filter over today's index and never permits a previous-date fallback.
+
 `.env` contains the runtime mirror path and is ignored.
 
 `.env.example` contains no real paths or patient information.
@@ -678,9 +688,11 @@ Doctor ID:
 
 ## Recent prescription behavior
 
-"Most recent" means:
+"Most recent" on the doctor page means:
 
-the most recent HIS prescription belonging to the selected doctor that matches configured publicly funded influenza antiviral mappings.
+the most recent HIS prescription dated today, belonging to the selected doctor, that matches configured publicly funded influenza antiviral mappings.
+
+The doctor lookup MUST NOT fall back to an earlier date when today has no matching prescription. Pharmacy date and date-range scans remain separate operations and may query their explicitly selected dates within the existing 31-day limit.
 
 Do NOT prioritize incomplete cases.
 

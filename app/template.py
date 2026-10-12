@@ -56,6 +56,11 @@ def load_reason_options(path: Path) -> list[ReasonOption]:
         raise TemplateCompatibilityError("The official Excel template cannot be opened.") from error
 
     try:
+        if "代碼表" in workbook.sheetnames:
+            options = _official_reason_options(workbook["代碼表"].iter_rows(values_only=True))
+            if options:
+                return options
+            raise TemplateCompatibilityError("The official Excel reason code table is missing or incompatible.")
         for sheet in workbook.worksheets:
             options = _options_from_sheet(sheet.iter_rows(values_only=True))
             if options:
@@ -63,6 +68,28 @@ def load_reason_options(path: Path) -> list[ReasonOption]:
     finally:
         workbook.close()
     raise TemplateCompatibilityError("The official Excel reason code table is missing or incompatible.")
+
+
+def _official_reason_options(rows: Iterable[tuple[object, ...]]) -> list[ReasonOption]:
+    rows = iter(rows)
+    headers = next(rows, ())
+    indexes = [index for index, value in enumerate(headers) if _header_name(value) == "用藥對象"]
+    if len(indexes) != 1:
+        return []
+    index = indexes[0]
+    options: list[ReasonOption] = []
+    seen: set[str] = set()
+    for row in rows:
+        value = _text(row[index] if index < len(row) else "")
+        if not value:
+            continue
+        code, separator, label = value.partition(":")
+        if not separator or not code.isdecimal() or not label.strip() or value in seen:
+            raise TemplateCompatibilityError("The official Excel reason code table contains invalid or duplicate values.")
+        # The complete dropdown value identifies subconditions sharing a main code.
+        options.append(ReasonOption(code=value, label=value))
+        seen.add(value)
+    return options
 
 
 def _options_from_sheet(rows: Iterable[tuple[object, ...]]) -> list[ReasonOption]:
