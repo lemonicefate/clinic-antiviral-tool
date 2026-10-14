@@ -14,21 +14,11 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+Import-Module (Join-Path $PSScriptRoot "ClinicAntiviral.Onboarding.psm1") -Force
 
 function Write-Pass {
     param([string]$Message)
     Write-Host "[PASS] $Message" -ForegroundColor Green
-}
-
-function Resolve-SecurityIdentifier {
-    param([string]$PrincipalUserId)
-
-    if ($PrincipalUserId -match "^S-\d-\d+(-\d+)+$") {
-        return $PrincipalUserId
-    }
-
-    $account = New-Object System.Security.Principal.NTAccount($PrincipalUserId)
-    return $account.Translate([System.Security.Principal.SecurityIdentifier]).Value
 }
 
 function Get-ConfiguredPort {
@@ -76,52 +66,6 @@ function Test-LocalTcpPort {
     }
 }
 
-function Assert-TaskIsForThisApplication {
-    param(
-        [Microsoft.Management.Infrastructure.CimInstance]$Task,
-        [Microsoft.PowerShell.Commands.LocalUser]$LocalUser,
-        [string]$ExpectedRepoPath
-    )
-
-    if (-not $Task.Enabled) {
-        throw "Scheduled task is disabled: $($Task.TaskName). Run onboarding again or enable it after review."
-    }
-
-    $principalUserId = [string]$Task.Principal.UserId
-    $principalSid = Resolve-SecurityIdentifier -PrincipalUserId $principalUserId
-    if ($principalSid -ne $LocalUser.SID.Value) {
-        throw ("Scheduled task principal is {0}, not the local application account {1}. The task was not started." -f $principalUserId, $LocalUser.Name)
-    }
-
-    $actions = @($Task.Actions)
-    if ($actions.Count -ne 1) {
-        throw "Scheduled task must contain exactly one application action. The task was not started."
-    }
-
-    $action = $actions[0]
-    if ([string]$action.Arguments -notmatch "(?i)(^|\s)-m\s+uvicorn\s+app\.main:app(\s|$)") {
-        throw "Scheduled task action is not the expected uvicorn application. The task was not started."
-    }
-
-    $workingDirectory = [Environment]::ExpandEnvironmentVariables([string]$action.WorkingDirectory)
-    if (-not [string]::IsNullOrWhiteSpace($ExpectedRepoPath)) {
-        if (-not [StringComparer]::OrdinalIgnoreCase.Equals($workingDirectory, $ExpectedRepoPath)) {
-            throw ("Scheduled task working directory is {0}, not {1}. The task was not started." -f $workingDirectory, $ExpectedRepoPath)
-        }
-    }
-
-    $expectedPython = Join-Path $ExpectedRepoPath ".venv\Scripts\python.exe"
-    if (-not (Test-Path -LiteralPath $expectedPython -PathType Leaf)) {
-        throw "The application Python executable is missing. Run onboard_app_host.ps1 first."
-    }
-
-    $actualPython = (Get-Item -LiteralPath $action.Execute).FullName
-    $expectedPythonFullPath = (Get-Item -LiteralPath $expectedPython).FullName
-    if (-not [StringComparer]::OrdinalIgnoreCase.Equals($actualPython, $expectedPythonFullPath)) {
-        throw ("Scheduled task executable is {0}, not {1}. The task was not started." -f $actualPython, $expectedPythonFullPath)
-    }
-}
-
 if ([string]::IsNullOrWhiteSpace($RepoPath)) {
     $RepoPath = Split-Path -Parent $PSScriptRoot
 }
@@ -134,7 +78,17 @@ try {
     }
 
     $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop
-    Assert-TaskIsForThisApplication -Task $task -LocalUser $localUser -ExpectedRepoPath $repo
+    $expectedPython = Join-Path $repo ".venv\Scripts\python.exe"
+    if (-not (Test-Path -LiteralPath $expectedPython -PathType Leaf)) {
+        throw "The application Python executable is missing. Run onboard_app_host.ps1 first."
+    }
+    $expectedArguments = "-m app.startup --expected-account-sid {0}" -f $localUser.SID.Value
+    Assert-ClinicTaskConfiguration `
+        -Task $task `
+        -ExpectedSid $localUser.SID.Value `
+        -ExpectedRepoPath $repo `
+        -ExpectedPythonPath $expectedPython `
+        -ExpectedArguments $expectedArguments
 
     $portNumber = Get-ConfiguredPort -Path $repo -RequestedPort $Port
     Write-Host "Starting the application through Windows Task Scheduler."
@@ -154,7 +108,7 @@ try {
     do {
         $currentTask = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
         if (($null -ne $currentTask) -and $currentTask.State -eq "Running" -and (Test-LocalTcpPort -PortNumber $portNumber)) {
-            Write-Pass ("The application is listening on http://127.0.0.1:{0}." -f $portNumber)
+            Write-Pass ("Local listener check succeeded at http://127.0.0.1:{0}." -f $portNumber)
             exit 0
         }
         Start-Sleep -Seconds 1

@@ -1,3 +1,5 @@
 @echo off
 setlocal
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$task = Get-ScheduledTask -TaskName 'ClinicAntiviralTool' -ErrorAction SilentlyContinue; if ($task) { Stop-ScheduledTask -TaskName 'ClinicAntiviralTool' -ErrorAction SilentlyContinue; Write-Host 'Stopped ClinicAntiviralTool scheduled task.' }; $processes = Get-CimInstance Win32_Process | Where-Object { $_.Name -match '^python(\.exe)?$' -and $_.CommandLine -like '*uvicorn app.main:app*' }; if (-not $processes) { Write-Host 'No clinic antiviral process found.' } else { $processes | ForEach-Object { Stop-Process -Id $_.ProcessId -Force; Write-Host ('Stopped PID ' + $_.ProcessId) } }"
+set "SCRIPT_DIR=%~dp0"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%stop_app_host.ps1" -RepoPath "%SCRIPT_DIR%.."
+exit /b %ERRORLEVEL%

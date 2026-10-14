@@ -11,6 +11,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $script:VerificationFailed = $false
+Import-Module (Join-Path $PSScriptRoot "ClinicAntiviral.Onboarding.psm1") -Force
 
 function Write-Pass {
     param([string]$Message)
@@ -74,18 +75,39 @@ function Test-ReadOnlyFileOpen {
 Write-Host "Application host HIS access verification"
 Write-Host "This script opens required files for read only. It never writes to HIS."
 
-$currentIdentity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-$currentAccount = ($currentIdentity -split "\\")[-1]
-Write-Host ("Current Windows identity: {0}" -f $currentIdentity)
-if ($ExpectedAccount -and $currentAccount -ine (($ExpectedAccount -split "\\")[-1])) {
-    Write-Fail ("Run this check as the application service account: {0}" -f $ExpectedAccount)
+try {
+    $expectedSid = Get-ClinicLocalAccountSid -ExpectedAccount $ExpectedAccount
+    $currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    Assert-ClinicCurrentAccountSid -ExpectedSid $expectedSid -CurrentSid $currentSid
+    Write-Host ("Current Windows identity SID: {0}" -f $currentSid)
+    Write-Pass "The verification is running under the expected application account SID."
 }
-else {
-    Write-Pass "The verification is running under the expected application account."
+catch {
+    Write-Fail $_.Exception.Message
+    exit 1
 }
 
 if ($HisPath -notmatch "^\\\\[^\\]+\\[^\\]+") {
     Write-Fail "HisPath must be an explicit UNC path such as \\HIS01\HISROOT. Do not use a mapped drive."
+    exit 1
+}
+
+try {
+    $credentialTarget = Get-ClinicCredentialTarget -HisPath $HisPath
+    $credentialResult = Test-ClinicCredentialEntry -Target $credentialTarget
+    if (-not $credentialResult.Exists) {
+        if ($credentialResult.ErrorCode -eq 1168) {
+            Write-Fail ("No HIS domain-password credential exists for target {0} under this account." -f $credentialTarget)
+        }
+        else {
+            Write-Fail ("The HIS credential for target {0} could not be confirmed under this account (Windows error {1})." -f $credentialTarget, $credentialResult.ErrorCode)
+        }
+        exit 1
+    }
+    Write-Pass ("HIS domain-password credential exists for target {0} under the expected account." -f $credentialTarget)
+}
+catch {
+    Write-Fail "The HIS Credential Manager entry could not be confirmed under the expected account."
     exit 1
 }
 

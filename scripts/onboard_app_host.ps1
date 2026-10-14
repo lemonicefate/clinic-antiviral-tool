@@ -10,6 +10,10 @@ param(
 
     [string]$RepoPath,
 
+    [Parameter(Mandatory = $true)]
+    [ValidateNotNullOrEmpty()]
+    [string]$PythonPath,
+
     [string]$AppDataPath = "C:\clinic-data\app-data",
 
     [string]$UploadedPath = "C:\clinic-data\uploaded",
@@ -23,6 +27,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+Import-Module (Join-Path $PSScriptRoot "ClinicAntiviral.Onboarding.psm1") -Force
 
 function Convert-SecureStringToPlainText {
     param([System.Security.SecureString]$SecureString)
@@ -42,43 +47,6 @@ function Assert-Elevated {
     if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
         throw "Run onboard_app_host.ps1 from an elevated PowerShell window."
     }
-}
-
-function Set-DotEnvValue {
-    param(
-        [string]$Path,
-        [string]$Name,
-        [string]$Value,
-        [switch]$OnlyIfMissing
-    )
-
-    if ($Value -match "[\r\n]") {
-        throw ("Configuration value contains a newline: {0}" -f $Name)
-    }
-
-    $lines = @()
-    if (Test-Path -LiteralPath $Path -PathType Leaf) {
-        $lines = @(Get-Content -LiteralPath $Path)
-    }
-
-    $pattern = "^\s*{0}\s*=" -f [Regex]::Escape($Name)
-    if ($OnlyIfMissing -and ($lines | Where-Object { $_ -match $pattern })) {
-        return
-    }
-    $found = $false
-    $updated = foreach ($line in $lines) {
-        if ($line -match $pattern) {
-            $found = $true
-            "{0}={1}" -f $Name, $Value
-        }
-        else {
-            $line
-        }
-    }
-    if (-not $found) {
-        $updated += "{0}={1}" -f $Name, $Value
-    }
-    Set-Content -LiteralPath $Path -Value $updated -Encoding UTF8
 }
 
 function Grant-DirectoryAccess {
@@ -106,8 +74,6 @@ function Assert-LocalAccountIsSafe {
     }
 }
 
-Assert-Elevated
-
 if ($HisPath -notmatch "^\\\\[^\\]+\\[^\\]+") {
     throw "HisPath must be an explicit UNC path such as \\HIS01\HISROOT. Do not use a mapped drive."
 }
@@ -123,6 +89,10 @@ $envPath = Join-Path $repo ".env"
 $requirementsPath = Join-Path $repo "requirements.txt"
 $venvPath = Join-Path $repo ".venv"
 $venvPython = Join-Path $venvPath "Scripts\python.exe"
+Assert-Elevated
+$pythonEnvironment = Assert-ClinicPythonEnvironment -PythonPath $PythonPath -VenvPath $venvPath
+$PythonPath = $pythonEnvironment.Path
+$credentialTarget = Get-ClinicCredentialTarget -HisPath $HisPath
 
 Write-Host "Application host onboarding"
 Write-Host ("Repository: {0}" -f $repo)
@@ -131,10 +101,14 @@ Write-Host ""
 Write-Host "This script changes the application host only. It does not create or change an HIS user, share, or ACL."
 
 try {
+    $qualifiedAccount = ("{0}\{1}" -f $env:COMPUTERNAME, $AppServiceAccount)
     $localUser = Get-LocalUser -Name $AppServiceAccount -ErrorAction SilentlyContinue
     if ($null -eq $localUser) {
         Write-Host ("Create local application account {0}." -f $AppServiceAccount)
         $securePassword = Read-Host "Enter the application account password" -AsSecureString
+        if ($null -eq $securePassword -or $securePassword.Length -eq 0) {
+            throw "The application account password cannot be empty. No account was created."
+        }
         $localUser = New-LocalUser -Name $AppServiceAccount -Password $securePassword -Description "Clinic antiviral tool application task"
         $usersMembers = @(Get-LocalGroupMember -SID ([System.Security.Principal.SecurityIdentifier]"S-1-5-32-545") -ErrorAction SilentlyContinue)
         if (-not ($usersMembers | Where-Object { $_.SID.Value -eq $localUser.SID.Value })) {
@@ -147,6 +121,12 @@ try {
         $securePassword = Read-Host "Enter the existing application account password for Task Scheduler" -AsSecureString
     }
     Assert-LocalAccountIsSafe -LocalUser $localUser
+    if ($null -eq $securePassword -or $securePassword.Length -eq 0) {
+        throw "The application account password cannot be empty."
+    }
+    $applicationCredential = New-Object System.Management.Automation.PSCredential($qualifiedAccount, $securePassword)
+    Assert-ClinicPythonCanRunAsUser -PythonPath $PythonPath -Credential $applicationCredential
+
     $plainPassword = Convert-SecureStringToPlainText -SecureString $securePassword
     if ([string]::IsNullOrEmpty($plainPassword)) {
         throw "The application account password cannot be empty."
@@ -154,16 +134,16 @@ try {
 
     New-Item -ItemType Directory -Force -Path $AppDataPath, $UploadedPath | Out-Null
 
-    if (-not (Get-Command py.exe -ErrorAction SilentlyContinue)) {
-        throw "Python launcher py.exe was not found. Install Python 3.12 before running this script."
-    }
-    if (-not (Test-Path -LiteralPath $venvPython -PathType Leaf)) {
+    if (-not (Test-Path -LiteralPath $venvPath)) {
         Write-Host "Create Python 3.12 virtual environment."
-        & py.exe -3.12 -m venv $venvPath
+        & $PythonPath -m venv $venvPath
         if ($LASTEXITCODE -ne 0) {
             throw "Python 3.12 virtual environment creation failed."
         }
     }
+    [void](Assert-ClinicPythonEnvironment -PythonPath $PythonPath -VenvPath $venvPath)
+    Grant-DirectoryAccess -Path $repo -Account $qualifiedAccount -Rights "(OI)(CI)RX"
+    Assert-ClinicPythonCanRunAsUser -PythonPath $venvPython -Credential $applicationCredential
     if (-not $SkipDependencyInstall) {
         Write-Host "Install Python dependencies."
         & $venvPython -m pip install -r $requirementsPath
@@ -179,24 +159,17 @@ try {
     Set-DotEnvValue -Path $envPath -Name "HOST" -Value "0.0.0.0"
     Set-DotEnvValue -Path $envPath -Name "PORT" -Value ([string]$Port)
 
-    $qualifiedAccount = ("{0}\{1}" -f $env:COMPUTERNAME, $AppServiceAccount)
-    Grant-DirectoryAccess -Path $repo -Account $qualifiedAccount -Rights "(OI)(CI)RX"
     Grant-DirectoryAccess -Path $AppDataPath -Account $qualifiedAccount -Rights "(OI)(CI)M"
     Grant-DirectoryAccess -Path $UploadedPath -Account $qualifiedAccount -Rights "(OI)(CI)M"
 
     $actionParameters = @{
         Execute = $venvPython
-        Argument = ("-m uvicorn app.main:app --host 0.0.0.0 --port {0}" -f $Port)
+        Argument = ("-m app.startup --expected-account-sid {0}" -f $localUser.SID.Value)
         WorkingDirectory = $repo
     }
     $action = New-ScheduledTaskAction @actionParameters
     $trigger = New-ScheduledTaskTrigger -AtStartup -RandomDelay (New-TimeSpan -Minutes 1)
-    $settingsParameters = @{
-        StartWhenAvailable = $true
-        RestartCount = 3
-        RestartInterval = (New-TimeSpan -Minutes 1)
-    }
-    $settings = New-ScheduledTaskSettingsSet @settingsParameters
+    $settings = New-ClinicTaskSettings
 
     $registrationParameters = @{
         TaskName = $TaskName
@@ -236,18 +209,25 @@ try {
     }
 
     Write-Host ""
-    Write-Host "[PASS] Application host onboarding completed." -ForegroundColor Green
+    Write-Host "[PASS] Application host build completed. HIS credential and read-only access verification remain pending." -ForegroundColor Green
+    Write-Host "The startup preflight will keep uvicorn stopped until this task account can read the required HIS tables."
     Write-Host ("Task: {0}" -f $TaskName)
     Write-Host ("Local application account: {0}" -f $qualifiedAccount)
     Write-Host "The HIS credential is not stored by this elevated script. Store it once under the application account."
     Write-Host ""
     Write-Host "Next steps:"
     Write-Host ("1. runas /user:{0} /profile powershell.exe" -f $qualifiedAccount)
-    Write-Host ("2. .\scripts\store_his_credential.ps1 -Target <HIS_HOST> -RemoteUser <HIS_HOST>\svc_clinic_his_ro")
+    Write-Host ("2. .\scripts\store_his_credential.ps1 -Target '{0}' -RemoteUser '<REAL_HIS_HOST>\svc_clinic_his_ro' -ExpectedAccount '{1}'" -f $credentialTarget, $qualifiedAccount)
     Write-Host ("3. .\scripts\verify_his_access.ps1 -HisPath '{0}'" -f $HisPath)
     Write-Host "4. .\scripts\start.bat"
 }
 finally {
+    if ($null -ne $applicationCredential) {
+        $applicationCredential = $null
+    }
+    if ($null -ne $securePassword) {
+        $securePassword.Dispose()
+    }
     if ($null -ne $plainPassword) {
         $plainPassword = $null
     }
