@@ -277,33 +277,64 @@ function Get-ClinicPythonRuntimeInfo {
             $runtime = & $RuntimeProbe $resolvedPath
         }
         else {
-            $probeCode = "import os,sys;print('CLINIC_VERSION=%d.%d'%sys.version_info[:2]);print('CLINIC_BASE='+os.path.realpath(sys.base_prefix))"
+            $probeCode = @'
+import os
+import sys
+import sysconfig
+import encodings
+import venv
+import ensurepip
+
+stdlib = os.path.realpath(sysconfig.get_path('stdlib'))
+normalize = lambda value: os.path.normcase(os.path.realpath(value))
+modules = (encodings, venv, ensurepip)
+try:
+    stdlib_valid = os.path.isdir(stdlib) and all(
+        os.path.commonpath([normalize(stdlib), normalize(module.__file__)]) == normalize(stdlib)
+        for module in modules
+    )
+except (OSError, TypeError, ValueError):
+    stdlib_valid = False
+
+print('CLINIC_VERSION=%d.%d' % sys.version_info[:2])
+print('CLINIC_BASE=' + os.path.realpath(sys.base_prefix))
+print('CLINIC_STDLIB=' + stdlib)
+print('CLINIC_STDLIB_VALID=' + ('true' if stdlib_valid else 'false'))
+'@
             $probeOutput = @(& $resolvedPath -c $probeCode 2>&1)
-            if ($LASTEXITCODE -ne 0 -or $probeOutput.Count -lt 2) {
-                throw "Python did not return a successful runtime probe."
+            if ($LASTEXITCODE -ne 0 -or $probeOutput.Count -lt 4) {
+                throw "Python did not return a successful runtime and standard-library probe."
             }
             $versionLine = $probeOutput | Where-Object { [string]$_ -match '^CLINIC_VERSION=\d+\.\d+$' } | Select-Object -First 1
             $baseLine = $probeOutput | Where-Object { [string]$_ -match '^CLINIC_BASE=.+$' } | Select-Object -First 1
-            if ($null -eq $versionLine -or $null -eq $baseLine) {
-                throw "Python did not return its version and base interpreter markers."
+            $stdlibLine = $probeOutput | Where-Object { [string]$_ -match '^CLINIC_STDLIB=.+$' } | Select-Object -First 1
+            $stdlibValidLine = $probeOutput | Where-Object { [string]$_ -match '^CLINIC_STDLIB_VALID=(true|false)$' } | Select-Object -First 1
+            if ($null -eq $versionLine -or $null -eq $baseLine -or $null -eq $stdlibLine -or $null -eq $stdlibValidLine) {
+                throw "Python did not return its version, base interpreter, and standard-library markers."
+            }
+            if ([string]$stdlibValidLine -ne 'CLINIC_STDLIB_VALID=true') {
+                throw "Python's standard library, venv module, or ensurepip module is incomplete or mismatched."
             }
             $runtime = [PSCustomObject]@{
                 Version = ([string]$versionLine -replace '^CLINIC_VERSION=', '')
                 BasePrefix = ([string]$baseLine -replace '^CLINIC_BASE=', '')
+                StdlibPath = ([string]$stdlibLine -replace '^CLINIC_STDLIB=', '')
+                StdlibValid = $true
             }
         }
     }
     catch {
-        throw ("The configured Python interpreter failed its version and base-path check: {0}" -f $resolvedPath)
+        throw ("The configured Python interpreter failed its version, base-path, or standard-library check: {0}" -f $resolvedPath)
     }
 
-    if ($null -eq $runtime -or [string]::IsNullOrWhiteSpace([string]$runtime.Version) -or [string]::IsNullOrWhiteSpace([string]$runtime.BasePrefix)) {
-        throw ("Python did not return a usable runtime identity: {0}" -f $resolvedPath)
+    if ($null -eq $runtime -or [string]::IsNullOrWhiteSpace([string]$runtime.Version) -or [string]::IsNullOrWhiteSpace([string]$runtime.BasePrefix) -or [string]::IsNullOrWhiteSpace([string]$runtime.StdlibPath) -or $null -eq $runtime.StdlibValid -or -not [bool]$runtime.StdlibValid) {
+        throw ("Python did not return a usable runtime and standard-library identity: {0}" -f $resolvedPath)
     }
     return [PSCustomObject]@{
         Path = $resolvedPath
         Version = [string]$runtime.Version
         BasePrefix = [IO.Path]::GetFullPath([string]$runtime.BasePrefix).TrimEnd('\')
+        StdlibPath = [IO.Path]::GetFullPath([string]$runtime.StdlibPath).TrimEnd('\')
     }
 }
 

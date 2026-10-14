@@ -313,6 +313,7 @@ def test_python_runtime_and_existing_venv_are_checked_before_onboarding(tmp_path
         f"""
 Import-Module {_ps_quote(ROOT / 'scripts' / 'ClinicAntiviral.Onboarding.psm1')} -Force
 $runtimeRoot = Join-Path {_ps_quote(tmp_path)} 'shared Python 312'
+$stdlibRoot = Join-Path $runtimeRoot 'Lib'
 $venvRoot = Join-Path {_ps_quote(tmp_path)} 'repository venv'
 $python = Join-Path $runtimeRoot 'python.exe'
 $venvPython = Join-Path $venvRoot 'Scripts\\python.exe'
@@ -323,22 +324,27 @@ New-Item -ItemType Directory -Force -Path (Split-Path $python), (Split-Path $ven
 $probe = {{
     param([string]$Executable)
     if ([StringComparer]::OrdinalIgnoreCase.Equals($Executable, $venvPython)) {{
-        return [PSCustomObject]@{{ Version = '3.12'; BasePrefix = $runtimeRoot }}
+        return [PSCustomObject]@{{ Version = '3.12'; BasePrefix = $runtimeRoot; StdlibPath = $stdlibRoot; StdlibValid = $true }}
     }}
-    return [PSCustomObject]@{{ Version = '3.12'; BasePrefix = $runtimeRoot }}
+    return [PSCustomObject]@{{ Version = '3.12'; BasePrefix = $runtimeRoot; StdlibPath = $stdlibRoot; StdlibValid = $true }}
 }}
 $before = [System.IO.File]::ReadAllText((Join-Path $venvRoot 'pyvenv.cfg'))
 $info = Assert-ClinicPythonEnvironment -PythonPath $python -VenvPath $venvRoot -RuntimeProbe $probe
 if ($info.Version -ne '3.12') {{ throw 'The selected shared interpreter was not accepted.' }}
+if ([IO.Path]::GetFileName($info.StdlibPath) -ne 'Lib') {{ throw 'The validated standard-library path was not returned.' }}
 if ([System.IO.File]::ReadAllText((Join-Path $venvRoot 'pyvenv.cfg')) -ne $before) {{ throw 'A valid existing venv was modified.' }}
 
-$wrongVersionProbe = {{ param([string]$Executable) return [PSCustomObject]@{{ Version = '3.11'; BasePrefix = $runtimeRoot }} }}
+$wrongVersionProbe = {{ param([string]$Executable) return [PSCustomObject]@{{ Version = '3.11'; BasePrefix = $runtimeRoot; StdlibPath = $stdlibRoot; StdlibValid = $true }} }}
 try {{ Assert-ClinicPythonEnvironment -PythonPath $python -VenvPath (Join-Path {_ps_quote(tmp_path)} 'new venv') -RuntimeProbe $wrongVersionProbe; throw 'Expected wrong Python version rejection.' }}
 catch {{ if ($_.Exception.Message -notmatch '3.12') {{ throw }} }}
 
 $failedProbe = {{ param([string]$Executable) throw 'synthetic incomplete Python runtime' }}
 try {{ Get-ClinicPythonRuntimeInfo -PythonPath $python -RuntimeProbe $failedProbe; throw 'Expected an unusable Python runtime to be rejected.' }}
-catch {{ if ($_.Exception.Message -notmatch 'failed its version and base-path check') {{ throw }} }}
+catch {{ if ($_.Exception.Message -notmatch 'failed its version, base-path, or standard-library check') {{ throw }} }}
+
+$invalidStdlibProbe = {{ param([string]$Executable) return [PSCustomObject]@{{ Version = '3.12'; BasePrefix = $runtimeRoot; StdlibPath = (Join-Path $runtimeRoot 'missing Lib'); StdlibValid = $false }} }}
+try {{ Get-ClinicPythonRuntimeInfo -PythonPath $python -RuntimeProbe $invalidStdlibProbe; throw 'Expected an incomplete Python standard library to be rejected.' }}
+catch {{ if ($_.Exception.Message -notmatch 'standard-library') {{ throw }} }}
 
 [System.IO.File]::WriteAllText((Join-Path $venvRoot 'pyvenv.cfg'), "home = C:\\OtherPython`r`n")
 try {{ Assert-ClinicPythonEnvironment -PythonPath $python -VenvPath $venvRoot -RuntimeProbe $probe; throw 'Expected wrong venv base rejection.' }}

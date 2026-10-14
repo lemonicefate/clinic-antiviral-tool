@@ -51,7 +51,7 @@ Perform these checks before onboarding.
 2. Confirm that both computers are in `WORKGROUP`.
 3. Obtain a local administrator account for each computer.
 4. Confirm that the HIS vendor or HIS administrator already provides a read-only account and a read-only share.
-5. Install a shared Python 3.12 runtime on the application host and note its `python.exe` path. It must be outside an administrator's private profile and accessible to `svc_clinic_tool`; onboarding will check the version and later launch it under that account. Example: `C:\Program Files\Python312\python.exe`.
+5. Install a shared Python 3.12 runtime on the application host and note its `python.exe` path. It must include its matching standard library, `venv`, and `ensurepip`, be outside an administrator's private profile, and be accessible to `svc_clinic_tool`. Onboarding checks these runtime files before it creates the account, `.venv`, or task. Example: `C:\Program Files\Python312\python.exe`.
 6. Confirm that the application host can resolve the HIS computer name and reach SMB (TCP 445).
 7. Copy this repository to a stable local path on the application host. Example: `C:\clinic-antiviral-tool`.
 
@@ -357,7 +357,7 @@ Manual checks are limited to the real boundaries:
 2. 確認兩台電腦都屬於 `WORKGROUP`。
 3. 為每台電腦準備本機系統管理員帳號。
 4. 確認 HIS 廠商或 HIS 管理員已提供唯讀帳號及唯讀分享。
-5. 在應用程式主機安裝共用的 Python 3.12，記下 `python.exe` 路徑。該路徑不得只位於管理員的個人目錄，且 `svc_clinic_tool` 必須能執行它；onboarding 會先檢查版本，再以該帳號實際啟動。範例：`C:\Program Files\Python312\python.exe`。
+5. 在應用程式主機安裝共用的 Python 3.12，記下 `python.exe` 路徑。安裝目錄必須包含相符的標準函式庫、`venv` 與 `ensurepip`，不得只位於管理員的個人目錄，且 `svc_clinic_tool` 必須能執行它。onboarding 會在建立帳號、`.venv` 或排程前檢查這些 runtime 檔案。範例：`C:\Program Files\Python312\python.exe`。
 6. 確認應用程式主機可以解析 HIS 電腦名稱，並可連線至 SMB TCP 445 埠。
 7. 將本 repository 複製到應用程式主機的固定路徑。例如 `C:\clinic-antiviral-tool`。
 
