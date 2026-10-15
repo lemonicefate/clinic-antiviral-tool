@@ -410,7 +410,17 @@ function Assert-ClinicPythonCanRunAsUser {
         }
     }
     catch {
-        throw ("The application account could not launch the configured Python interpreter: {0}" -f $resolvedPath)
+        $launchException = $_.Exception
+        $nativeException = $launchException
+        while ($null -ne $nativeException -and $nativeException -isnot [System.ComponentModel.Win32Exception]) {
+            $nativeException = $nativeException.InnerException
+        }
+        $launchDetail = $launchException.Message
+        if ($null -ne $nativeException) {
+            $launchDetail = ("Win32 error {0}: {1}" -f $nativeException.NativeErrorCode, $nativeException.Message)
+        }
+        $message = ("The application account could not launch the configured Python interpreter: {0}. {1}" -f $resolvedPath, $launchDetail)
+        throw [System.InvalidOperationException]::new($message, $launchException)
     }
     if ($null -eq $process -or [int]$process.ExitCode -ne 0) {
         throw ("The application account could not run Python 3.12 at {0}. Check its runtime permissions before continuing." -f $resolvedPath)

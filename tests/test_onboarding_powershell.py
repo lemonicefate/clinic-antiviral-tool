@@ -424,6 +424,103 @@ catch {{ if ($_.Exception.Message -notmatch 'application account') {{ throw }} }
     _assert_powershell_passed(result)
 
 
+@pytest.mark.parametrize(
+    ("native_error_code", "wrapped_error"),
+    [(5, False), (267, True)],
+    ids=["direct-win32-5", "wrapped-win32-267"],
+)
+def test_python_launch_error_preserves_synthetic_start_process_win32_details(
+    tmp_path: Path, native_error_code: int, wrapped_error: bool
+) -> None:
+    result = _run_powershell(
+        tmp_path,
+        f"""
+Import-Module {_ps_quote(ROOT / 'scripts' / 'ClinicAntiviral.Onboarding.psm1')} -Force
+$python = Join-Path {_ps_quote(tmp_path)} 'shared runtime.exe'
+[System.IO.File]::WriteAllText($python, 'synthetic executable placeholder')
+$password = New-Object System.Security.SecureString
+foreach ($character in 'synthetic-only'.ToCharArray()) {{ $password.AppendChar($character) }}
+$password.MakeReadOnly()
+$credential = New-Object System.Management.Automation.PSCredential('APP01\\svc_clinic_tool', $password)
+$syntheticReason = 'synthetic native reason'
+$nativeErrorCode = {native_error_code}
+$win32Exception = [System.ComponentModel.Win32Exception]::new($nativeErrorCode, $syntheticReason)
+if ({'$true' if wrapped_error else '$false'}) {{
+    $global:clinicSyntheticLaunchFailure = [System.InvalidOperationException]::new(
+        'synthetic PowerShell process wrapper',
+        $win32Exception
+    )
+}}
+else {{
+    $global:clinicSyntheticLaunchFailure = $win32Exception
+}}
+
+$global:clinicSyntheticStartProcessCalled = $false
+$module = Get-Module -Name 'ClinicAntiviral.Onboarding'
+if ($null -eq $module) {{ throw 'The onboarding module was not imported.' }}
+& $module {{
+    function script:Start-Process {{
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory = $true)][string]$FilePath,
+            [string]$ArgumentList,
+            [System.Management.Automation.PSCredential]$Credential,
+            [switch]$Wait,
+            [switch]$PassThru,
+            [string]$WindowStyle
+        )
+        $global:clinicSyntheticStartProcessCalled = $true
+        $global:clinicSyntheticStartProcessAccount = $Credential.UserName
+        throw $global:clinicSyntheticLaunchFailure
+    }}
+}}
+$startProcessCommandType = & $module {{ (Get-Command Start-Process).CommandType }}
+if ($startProcessCommandType -ne 'Function') {{ throw 'The synthetic Start-Process override is not active in the onboarding module.' }}
+
+try {{
+    $caught = $null
+    try {{
+        Assert-ClinicPythonCanRunAsUser -PythonPath $python -Credential $credential
+    }}
+    catch {{
+        $caught = $_
+    }}
+    if (-not $global:clinicSyntheticStartProcessCalled) {{ throw 'The default account-context path did not call the synthetic Start-Process boundary.' }}
+    if ($global:clinicSyntheticStartProcessAccount -ne 'APP01\\svc_clinic_tool') {{ throw 'The launch did not use the synthetic application account.' }}
+    if ($null -eq $caught) {{ throw 'Expected the synthetic Start-Process failure to stop onboarding.' }}
+
+    $exceptionMessages = New-Object 'System.Collections.Generic.List[string]'
+    $hasOriginalWin32Exception = $false
+    for ($exception = $caught.Exception; $null -ne $exception; $exception = $exception.InnerException) {{
+        $exceptionMessages.Add($exception.Message)
+        if (
+            $exception -is [System.ComponentModel.Win32Exception] -and
+            $exception.NativeErrorCode -eq $nativeErrorCode -and
+            $exception.Message -eq $syntheticReason
+        ) {{
+            $hasOriginalWin32Exception = $true
+        }}
+    }}
+    $topLevelMessage = $caught.Exception.Message
+    $requiredNativeLabel = 'Win32 error {{0}}' -f $nativeErrorCode
+    $missingDetails = New-Object 'System.Collections.Generic.List[string]'
+    if ($topLevelMessage -notmatch [Regex]::Escape($requiredNativeLabel)) {{ $missingDetails.Add($requiredNativeLabel) }}
+    if ($topLevelMessage -notmatch [Regex]::Escape($syntheticReason)) {{ $missingDetails.Add($syntheticReason) }}
+    if (-not $hasOriginalWin32Exception) {{ $missingDetails.Add('original Win32Exception in the exception chain') }}
+    if ($missingDetails.Count -gt 0) {{
+        throw "Launch diagnostic contract missing $($missingDetails -join ', '); top-level message: $topLevelMessage; chain: $($exceptionMessages -join ' | ')"
+    }}
+}}
+finally {{
+    if ($null -ne $password) {{ $password.Dispose(); $password = $null }}
+}}
+""",
+    )
+    assert "synthetic-only" not in result.stdout
+    assert "synthetic-only" not in result.stderr
+    _assert_powershell_passed(result)
+
+
 def test_his_credential_uses_expected_sid_secure_prompt_and_native_write_boundary(
     tmp_path: Path,
 ) -> None:

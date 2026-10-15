@@ -140,6 +140,24 @@ The script performs these application-host actions:
 
 The script does not create or modify anything on `HIS01`. The password entered here is the application account password, not the HIS password. An existing `.venv` is kept when its interpreter and `pyvenv.cfg` match the selected Python 3.12. If it does not match, onboarding stops with instructions to review and rebuild only `.venv`; it does not delete SQLite, exports, or logs. The account-context runtime check must also pass before `.env` or the task is updated.
 
+If the account-context Python launch fails, the error includes the underlying cause and the numeric Win32 error code when available. To collect that diagnostic without repeating onboarding, run this probe in Windows PowerShell 5.1 from the same working directory as the failed run. Set the module path to a checkout containing this diagnostic change. Use the failing local application account and the configured shared Python path (or the venv Python path if that is the failing interpreter):
+
+```powershell
+Import-Module 'C:\clinic-antiviral-tool\scripts\ClinicAntiviral.Onboarding.psm1' -Force
+$accountProbeCredential = Get-Credential -UserName "$env:COMPUTERNAME\svc_clinic_tool" -Message 'Enter the application account password for the Python probe'
+try {
+  Write-Host ("Probe working directory: {0}" -f (Get-Location).Path)
+  Assert-ClinicPythonCanRunAsUser -PythonPath 'C:\Program Files\Python312\python.exe' -Credential $accountProbeCredential
+  Write-Host 'PASS: the application account launched Python 3.12.'
+}
+finally {
+  if ($null -ne $accountProbeCredential) { $accountProbeCredential.Password.Dispose() }
+  Remove-Variable accountProbeCredential -ErrorAction SilentlyContinue
+}
+```
+
+This only probes Python startup and version; it does not create accounts, rebuild `.venv`, change tasks or credentials, or access HIS. A passing probe does not verify dependency imports or the full onboarding flow. Share the error text and code with sensitive values redacted; never share the password.
+
 The onboarding task has an AtStartup trigger, an unlimited execution time, and a three-restart failure policy. Its Python action runs `app.startup`, which checks the task account SID, confirms that account has a domain-password credential for the exact UNC host in Credential Manager, and opens the required HIS DBF files read-only before it starts uvicorn. Until the credential is present and those files can be read, the task exits without opening the application listener.
 
 To repeat setup or update the port/path settings, run the same command with the selected shared Python path. Existing comments, unrelated settings, and an existing `SMIS_TEMPLATE_PATH` are retained; each managed key is updated once. If the script detects joined or invalid UTF-8 settings, stop and recreate `.env` from confirmed values rather than trying to split or repair the old value.
@@ -440,6 +458,24 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 - 如果指定 `-ConfigureFirewall`，建立應用程式埠的 Private 網路設定檔入站防火牆規則。
 
 此腳本不會在 `HIS01` 建立或修改任何設定。此階段輸入的是應用程式帳號密碼，不是 HIS 密碼。既有 `.venv` 若與指定 Python 3.12 的 `pyvenv.cfg` 及實際直譯器版本相符，就會保留；不相符時流程會停止，並指示檢查後只重建 `.venv`，不刪除 SQLite、匯出檔或記錄檔。更新 `.env` 或排程前，也必須確認工作帳號能執行該 runtime。
+
+工作帳號啟動 Python 失敗時，錯誤會保留底層原因，並在可取得時顯示數字形式的 Win32 錯誤碼。若要取得診斷資訊而不重跑 onboarding，請在 Windows PowerShell 5.1 中，從失敗時相同的工作目錄執行以下探測。模組路徑須指向已包含此診斷修正的 checkout。帳號須改為發生失敗的本機應用程式工作帳號，Python 路徑須使用當時指定的共用路徑（若失敗的是 venv，則使用其 Python 路徑）：
+
+```powershell
+Import-Module 'C:\clinic-antiviral-tool\scripts\ClinicAntiviral.Onboarding.psm1' -Force
+$accountProbeCredential = Get-Credential -UserName "$env:COMPUTERNAME\svc_clinic_tool" -Message 'Enter the application account password for the Python probe'
+try {
+  Write-Host ("Probe working directory: {0}" -f (Get-Location).Path)
+  Assert-ClinicPythonCanRunAsUser -PythonPath 'C:\Program Files\Python312\python.exe' -Credential $accountProbeCredential
+  Write-Host 'PASS: the application account launched Python 3.12.'
+}
+finally {
+  if ($null -ne $accountProbeCredential) { $accountProbeCredential.Password.Dispose() }
+  Remove-Variable accountProbeCredential -ErrorAction SilentlyContinue
+}
+```
+
+這只檢查 Python 能否啟動及版本，不會建立帳號、重建 `.venv`、更改排程或憑證，也不會存取 HIS。探測通過不代表相依套件匯入或整體 onboarding 已驗收。回報時請提供已遮蔽敏感資訊的錯誤文字與錯誤碼，不要提供密碼。
 
 排程工作使用 Windows 啟動觸發、無執行時間上限，並在失敗時最多依既定政策重啟三次。它先以 `.venv` Python 執行 `app.startup`；該程式會用排程工作帳號檢查 SID、確認 Credential Manager 有 UNC 主機對應的 domain-password 憑證，並以唯讀方式開啟必要 HIS DBF，全部通過後才啟動 uvicorn。尚未儲存憑證或無法讀取 HIS 時，工作會結束且不會開啟應用程式 listener。
 
