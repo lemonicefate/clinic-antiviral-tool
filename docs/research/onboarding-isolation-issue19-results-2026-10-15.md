@@ -7,7 +7,7 @@
 - Implementer branch: `codex/issue-19-isolation-validation`, based on integration commit `e1e744fea7de22d6549576b65f022ba67c46f162`.
 - External test root: `C:\clinic-onboarding-checks\issue19-20261015-665D45E1`.
 - Fresh project copy: `C:\clinic-onboarding-checks\issue19-20261015-665D45E1\runner\project`.
-- The copy manifest saw 64 tracked files and copied 63. It excluded `.env.example`, an environment configuration template, and did not copy `.git`, `.env`, `.venv`, DBF/FPT/CDX/SQLite data, or real Excel files. The manifest records the file list and hashes. SHA-256 comparisons for `README.md`, `scripts/ClinicAntiviral.Onboarding.psm1`, and `tests/test_onboarding_powershell.py` matched the source at the integration commit.
+- The pre-onboarding copy manifest saw 64 tracked files and copied 63, excluding `.env.example`. The single onboarding run used that 63-file copy. `.env.example` contains only documented sample values and is not read by application or onboarding code; after the run, it was restored byte-for-byte into the retained project copy. The original manifest preserves the pre-run state, and `reports/post-run-template-restoration.json` records that all 64 tracked files from the integration baseline are present with matching hashes in the retained copy. The copy did not include `.git`, `.env`, `.venv`, DBF/FPT/CDX/SQLite data, or real Excel files. SHA-256 comparisons for `README.md`, `scripts/ClinicAntiviral.Onboarding.psm1`, and `tests/test_onboarding_powershell.py` matched the source at the integration commit.
 - Unique preflight values were account `svc19665D45E1`, task `Clinic19-665D45E1`, and port `24205`. The initial preflight recorded the new external root as absent; it was then created for this run. Before onboarding, the work script confirmed the account, profile path, task, project `.env`, and `.venv` were absent, and port 24205 was unoccupied and bindable. App data, uploads, pip cache, venv, logs, and reports were kept under the new external root.
 - The only HIS path used was synthetic `\\192.0.2.10\HISROOT`. No HIS credential or real patient data was used.
 
@@ -36,6 +36,7 @@ The raw work report's top-level `account.sid` is empty because that field record
 ## Evidence index
 
 - `reports/copy-manifest.json` — tracked-file copy, exclusions, and source/copy hash comparisons.
+- `reports/post-run-template-restoration.json` — post-run restoration and hash comparison for the safe `.env.example` template; the original manifest remains unchanged.
 - `reports/formal-task-before.xml` and `reports/formal-service-before.json` — formal task settings and listener baseline.
 - `reports/actual-onboarding/report.md`, `report.json`, `work-report.json`, `stdout.txt`, and `stderr.txt` — single actual run and full captured output.
 - `reports/actual-onboarding/account-python/` — shared interpreter, venv, and pip-check streams.
