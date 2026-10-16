@@ -13,6 +13,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 $script:VerificationFailed = $false
+$script:AuthorizationContext = [PSCustomObject]@{ Sids = @(); Complete = $false }
+Import-Module (Join-Path $PSScriptRoot "ClinicAntiviral.Onboarding.psm1") -Force
 
 function Write-Pass {
     param([string]$Message)
@@ -28,33 +30,6 @@ function Write-Fail {
     param([string]$Message)
     $script:VerificationFailed = $true
     Write-Host "[FAIL] $Message" -ForegroundColor Red
-}
-
-function Test-PrincipalMatches {
-    param(
-        [string]$Principal,
-        [string]$AccountName,
-        [string]$ComputerName
-    )
-
-    $normalized = $Principal.Trim().ToLowerInvariant()
-    $localAccount = ("{0}\{1}" -f $ComputerName, $AccountName).ToLowerInvariant()
-    $shortAccount = $AccountName.ToLowerInvariant()
-    $wellKnown = @(
-        "everyone",
-        "authenticated users",
-        "builtin\users",
-        ("{0}\users" -f $ComputerName).ToLowerInvariant()
-    )
-
-    return ($normalized -eq $localAccount -or $normalized -eq $shortAccount -or $wellKnown -contains $normalized)
-}
-
-function Test-WriteAccess {
-    param([object]$AccessRight)
-
-    $right = [string]$AccessRight
-    return $right -match "(?i)(Full|Change|Modify|Write|Create|Delete|Append)"
 }
 
 function Find-TableFile {
@@ -81,19 +56,16 @@ function Test-ReadOnlyAclForPath {
 
     try {
         $acl = Get-Acl -LiteralPath $Path
-        $relevantAcl = @(
-            $acl.Access | Where-Object {
-                Test-PrincipalMatches -Principal $_.IdentityReference.Value -AccountName $ReadonlyAccount -ComputerName $env:COMPUTERNAME
-            }
-        )
-        if ($relevantAcl.Count -eq 0) {
-            Write-Fail ("The effective NTFS read grant is not proven: {0}" -f $Description)
-        }
-        elseif ($relevantAcl | Where-Object { $_.AccessControlType -eq "Allow" -and (Test-WriteAccess $_.FileSystemRights) }) {
-            Write-Fail ("A matching NTFS principal has write-level access: {0}" -f $Description)
+        $decision = Get-ClinicReadOnlyAccessDecision `
+            -Rules @($acl.Access) `
+            -ApplicableSids $script:AuthorizationContext.Sids `
+            -PrincipalGraphComplete $script:AuthorizationContext.Complete `
+            -Kind FileSystem
+        if ($decision.Allowed) {
+            Write-Pass ("Read-only ACL metadata is proven for this resource: {0}" -f $Description)
         }
         else {
-            Write-Pass ("Matching NTFS entries grant read access only: {0}" -f $Description)
+            Write-Fail ("The NTFS read-only grant is not proven for {0}: {1}" -f $Description, $decision.Reason)
         }
     }
     catch {
@@ -142,13 +114,15 @@ try {
     }
 
     if ($null -ne $localUser) {
-        $administrators = @(Get-LocalGroupMember -SID ([System.Security.Principal.SecurityIdentifier]"S-1-5-32-544") -ErrorAction SilentlyContinue)
-        $isAdministrator = $administrators | Where-Object { $_.SID.Value -eq $localUser.SID.Value }
-        if ($null -ne $isAdministrator) {
+        $script:AuthorizationContext = Get-ClinicAuthorizationContext -AccountSid $localUser.SID.Value
+        if (-not $script:AuthorizationContext.Complete) {
+            Write-Fail "Local group membership could not be fully resolved. Ask the HIS administrator to confirm the account's access."
+        }
+        elseif ($script:AuthorizationContext.Sids -contains "S-1-5-32-544") {
             Write-Fail ("Read-only account is a member of the local Administrators group: {0}" -f $ReadonlyAccount)
         }
         else {
-            Write-Pass "Read-only account is not a direct member of local Administrators."
+            Write-Pass "Read-only account is not a member of local Administrators through a resolved local group."
         }
     }
 }
@@ -197,19 +171,16 @@ try {
         }
 
         $shareAccess = @(Get-SmbShareAccess -Name $share.Name -ErrorAction Stop)
-        $relevantShareAccess = @(
-            $shareAccess | Where-Object {
-                Test-PrincipalMatches -Principal $_.AccountName -AccountName $ReadonlyAccount -ComputerName $env:COMPUTERNAME
-            }
-        )
-        if ($relevantShareAccess.Count -eq 0) {
-            Write-Fail "The effective SMB share read grant for the read-only account is not proven."
-        }
-        elseif ($relevantShareAccess | Where-Object { $_.AccessControlType -eq "Allow" -and (Test-WriteAccess $_.AccessRight) }) {
-            Write-Fail "The read-only account or a broad matching share principal has write-level SMB access."
+        $shareDecision = Get-ClinicReadOnlyAccessDecision `
+            -Rules $shareAccess `
+            -ApplicableSids $script:AuthorizationContext.Sids `
+            -PrincipalGraphComplete $script:AuthorizationContext.Complete `
+            -Kind Share
+        if ($shareDecision.Allowed) {
+            Write-Pass "Read-only SMB ACL metadata is proven for the selected HIS share."
         }
         else {
-            Write-Pass "Matching SMB share entries grant read access only."
+            Write-Fail ("The SMB read-only grant is not proven for the selected HIS share: {0}" -f $shareDecision.Reason)
         }
     }
 }

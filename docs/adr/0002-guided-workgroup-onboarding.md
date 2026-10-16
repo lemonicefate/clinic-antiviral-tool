@@ -12,4 +12,5 @@ The v0.1.0 application host uses a separate local task account and stores the ex
 - The credential bootstrap must run under the same local account that runs the scheduled task.
 - The application host can be automated, but a HIS administrator must resolve failed verification items.
 - Passwords do not rotate automatically and are never written to `.env`, scripts, logs, or Git.
-- Task Scheduler starts the normal `uvicorn` process at Windows startup. A Windows Service wrapper is not required for v0.1.0.
+- Task Scheduler runs the repository venv's startup entry point at Windows startup. That entry point checks the task account SID, confirms the matching HIS host domain-password credential exists in that account's Credential Manager, and opens the required HIS tables read-only before it starts the normal `uvicorn` process; a Windows Service wrapper is not required for v0.1.0.
+- An AtStartup trigger may exist before the HIS credential is configured, but the application listener cannot start until the task identity and required HIS read access pass in the task account context.

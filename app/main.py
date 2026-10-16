@@ -37,10 +37,15 @@ def create_app(
     database: Database | None = None,
 ) -> FastAPI:
     settings = settings or Settings.from_env()
-    reader = his_reader or DbfHisReader(settings.his_mirror_path)
-    database = database or Database(settings.database_path)
-    templates = Jinja2Templates(directory=str(settings.base_dir / "templates"))
     logger = configure_logging(settings.log_path)
+    try:
+        reader = his_reader or DbfHisReader(settings.his_mirror_path)
+        database = database or Database(settings.database_path)
+        templates = Jinja2Templates(directory=str(settings.base_dir / "templates"))
+    except Exception:
+        logger.exception("Application initialization failed")
+        raise
+    logger.info("Application components initialized")
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):

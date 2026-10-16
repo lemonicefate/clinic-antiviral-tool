@@ -51,7 +51,7 @@ Perform these checks before onboarding.
 2. Confirm that both computers are in `WORKGROUP`.
 3. Obtain a local administrator account for each computer.
 4. Confirm that the HIS vendor or HIS administrator already provides a read-only account and a read-only share.
-5. Install Python 3.12 on the application host. The Python launcher `py.exe` MUST be available.
+5. Install a shared Python 3.12 runtime on the application host and note its `python.exe` path. It must include its matching standard library, `venv`, and `ensurepip`, be outside an administrator's private profile, and be accessible to `svc_clinic_tool`. Onboarding checks these runtime files before it creates the account, `.venv`, or task. Example: `C:\Program Files\Python312\python.exe`.
 6. Confirm that the application host can resolve the HIS computer name and reach SMB (TCP 445).
 7. Copy this repository to a stable local path on the application host. Example: `C:\clinic-antiviral-tool`.
 
@@ -71,7 +71,7 @@ $hisRoot = 'C:\HIS'
 
 Get-CimInstance Win32_ComputerSystem | Select-Object Name, Domain, PartOfDomain
 Get-LocalUser -Name $hisAccount
-Get-LocalGroupMember -Group 'Administrators'
+Get-LocalGroupMember -SID ([System.Security.Principal.SecurityIdentifier]'S-1-5-32-544')
 Get-SmbShare | Where-Object Path -eq $hisRoot
 Get-SmbShareAccess -Name 'HISROOT'
 (Get-Acl -LiteralPath $hisRoot).Access
@@ -109,7 +109,7 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
   -ReadonlyAccount 'svc_clinic_his_ro'
 ```
 
-Expected result: all required tables pass. The required tables are `CH012M1.DBF`, `CH011M1.DBF`, and `PD011M1.DBF`. `H_INV.DBF` is optional. The script checks the root and the `DATA` directory.
+Expected result: the required tables pass. The required tables are `CH012M1.DBF`, `CH011M1.DBF`, and `PD011M1.DBF`. `H_INV.DBF` is optional. The script checks ACL metadata for the selected share, HIS root, `DATA` directory when present, and each required table. It resolves the read-only account and local group membership by SID, requires an Allow-read entry, and rejects matching Deny or write-capable entries. If group membership or an ACL principal cannot be resolved, the result fails for HIS administrator review. This limited metadata check does not claim to prove permissions for every file in the shared root.
 
 If this check fails, stop. Do not use an automatic repair command. Ask the HIS administrator to review the failed item.
 
@@ -122,33 +122,56 @@ Set-Location C:\clinic-antiviral-tool
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\scripts\onboard_app_host.ps1 `
   -HisPath '\\HIS01\HISROOT' `
-  -ConfigureFirewall
+  -PythonPath 'C:\Program Files\Python312\python.exe'
 ```
 
-The script performs these application-host actions:
+The script follows this order on the application host:
 
-- create `APP01\svc_clinic_tool` if it does not exist;
-- prompt for the application account password without putting it in a command line;
-- create `.venv` with Python 3.12 and install `requirements.txt`;
-- create `C:\clinic-data\app-data` and `C:\clinic-data\uploaded`;
-- set application-host permissions for the repository and runtime directories;
-- set `HIS_MIRROR_PATH` to the UNC path in `.env`;
-- register the `ClinicAntiviralTool` Task Scheduler task for Windows startup;
-- optionally create a Private-profile inbound firewall rule for the app port.
+- before changing host state, check the selected shared Python 3.12 runtime and confirm that any existing `.venv` matches it;
+- securely prompt for the application account password without placing it in a command line, then create `APP01\svc_clinic_tool` if it does not exist or reuse the existing account;
+- verify that the application account can launch the shared Python runtime, create `C:\clinic-data\app-data`, `C:\clinic-data\uploaded`, and `.venv` if needed, grant repository access, and verify that account can launch the venv Python;
+- install `requirements.txt` unless `-SkipDependencyInstall` is used;
+- update the managed `.env` settings, including `HIS_MIRROR_PATH`, grant access to the runtime directories, and register the `ClinicAntiviralTool` Task Scheduler task for Windows startup;
+- create a Private-profile inbound firewall rule for the app port only when `-ConfigureFirewall` is supplied.
 
-The script does not create or modify anything on `HIS01`. The password entered here is the application account password, not the HIS password.
+The script does not create or modify anything on `HIS01`. The password entered here is the application account password, not the HIS password. An existing `.venv` is kept when its interpreter and `pyvenv.cfg` match the selected Python 3.12. If it does not match, onboarding stops with instructions to review and rebuild only `.venv`; it does not delete SQLite, exports, or logs. The shared-runtime and `.venv` account-context launch checks must pass before `.env` or the task is updated. A successful run means the application-host build completed; it does not mean the HIS credential or read-only access has been verified. The startup preflight blocks the listener unless those checks pass, and the task is started only in Phase 4.
+
+The example leaves the firewall unchanged. If the application host's active network profile is confirmed as Private and a host firewall rule is needed, add `-ConfigureFirewall` to this command. The switch creates an inbound rule for the app port on the Private profile only; it does not provide application authentication.
+
+If the account-context Python launch fails, the error includes the underlying cause and the numeric Win32 error code when available. To collect that diagnostic without repeating onboarding, run this probe in Windows PowerShell 5.1 from the same working directory as the failed run. Set the module path to a checkout containing this diagnostic change. Use the failing local application account and the configured shared Python path (or the venv Python path if that is the failing interpreter):
+
+```powershell
+Import-Module 'C:\clinic-antiviral-tool\scripts\ClinicAntiviral.Onboarding.psm1' -Force
+$accountProbeCredential = Get-Credential -UserName "$env:COMPUTERNAME\svc_clinic_tool" -Message 'Enter the application account password for the Python probe'
+try {
+  Write-Host ("Probe working directory: {0}" -f (Get-Location).Path)
+  Assert-ClinicPythonCanRunAsUser -PythonPath 'C:\Program Files\Python312\python.exe' -Credential $accountProbeCredential
+  Write-Host 'PASS: the application account launched Python 3.12.'
+}
+finally {
+  if ($null -ne $accountProbeCredential) { $accountProbeCredential.Password.Dispose() }
+  Remove-Variable accountProbeCredential -ErrorAction SilentlyContinue
+}
+```
+
+This only probes Python startup and version; it does not create accounts, rebuild `.venv`, change tasks or credentials, or access HIS. A passing probe does not verify dependency imports or the full onboarding flow. Share the error text and code with sensitive values redacted; never share the password.
+
+The onboarding task has an AtStartup trigger, an unlimited execution time, and a three-restart failure policy. Its Python action runs `app.startup`, which checks the task account SID, confirms that account has a domain-password credential for the exact UNC host in Credential Manager, and opens the required HIS DBF files read-only before it starts uvicorn. Until the credential is present and those files can be read, the task exits without opening the application listener.
+
+To repeat setup or update the port/path settings, run the same command with the selected shared Python path. Existing comments, unrelated settings, and an existing `SMIS_TEMPLATE_PATH` are retained; each managed key is updated once. If the script detects joined or invalid UTF-8 settings, stop and recreate `.env` from confirmed values rather than trying to split or repair the old value.
 
 If Python dependencies are already installed in an offline environment, use:
 
 ```powershell
 .\scripts\onboard_app_host.ps1 `
   -HisPath '\\HIS01\HISROOT' `
+  -PythonPath 'C:\Program Files\Python312\python.exe' `
   -SkipDependencyInstall
 ```
 
 #### Why Task Scheduler is used
 
-The repository starts `uvicorn` as a normal Python process. A real Windows Service is a different program type that must connect to the Windows Service Control Manager. Task Scheduler can start this normal process at Windows startup, keep a restart policy, and run it as `svc_clinic_tool`. This is the smallest setup for v0.1.0.
+The repository starts `uvicorn` as a normal Python process. A real Windows Service is a different program type that must connect to the Windows Service Control Manager. Task Scheduler runs the checked startup entry point as `svc_clinic_tool` at Windows startup. The entry point validates the task identity and read-only access to the required HIS tables before starting uvicorn. This is the smallest setup for v0.1.0.
 
 ### Phase 3: store and verify the HIS credential
 
@@ -167,20 +190,21 @@ Set-Location C:\clinic-antiviral-tool
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\scripts\store_his_credential.ps1 `
   -Target 'HIS01' `
-  -RemoteUser 'HIS01\svc_clinic_his_ro'
+  -RemoteUser 'HIS01\svc_clinic_his_ro' `
+  -ExpectedAccount 'APP01\svc_clinic_tool'
 ```
 
-`cmdkey` prompts for the HIS password. The password is not an argument. The target must match the host part of the UNC path. Use `HIS01`, not `\\HIS01\HISROOT`.
+The script checks the current Windows account SID against the local `APP01\svc_clinic_tool` SID before displaying its secure password prompt. It stores a domain-password credential with local-machine persistence in that account's Credential Manager. The target must be exactly the host part of the UNC path, without the share. If the UNC uses an IP address, use that IP for `-Target` and keep the real HIS computer prefix in `-RemoteUser`, for example `-Target '192.0.2.10' -RemoteUser 'HIS01\svc_clinic_his_ro'`. A `[PASS]` here means only that Credential Manager accepted the write; it does not confirm that the password works on HIS.
 
 Now verify the real access context:
 
 ```powershell
 .\scripts\verify_his_access.ps1 `
   -HisPath '\\HIS01\HISROOT' `
-  -ExpectedAccount 'svc_clinic_tool'
+  -ExpectedAccount 'APP01\svc_clinic_tool'
 ```
 
-This check lists the UNC path and opens the required DBF files for read only. It does not write a test file. A pass means that the scheduled-task identity can reach the required source files.
+This check requires the exact application-account SID, confirms the matching domain-password entry exists in that account's Credential Manager, lists the UNC path, and opens the required DBF files for read only. It does not write a test file. A pass proves that the credential entry is present and these required files are readable from this account at verification time; it does not claim that the entire share is readable.
 
 If the check fails, do not start the task. Check the computer name, the stored credential, the HIS share name, and the SMB firewall. Do not change the HIS host automatically.
 
@@ -205,11 +229,14 @@ operator
 The start script performs these checks before it starts the task:
 
 - the task exists and is enabled;
-- the task runs as `svc_clinic_tool`;
-- the task action is this repository's `.venv` Python and `uvicorn app.main:app`;
+- the task principal SID matches the local `svc_clinic_tool` account and its logon type is `Password`, which supports network access;
+- the task keeps its AtStartup trigger, failure-restart policy, and unlimited execution time;
+- the task action is this repository's `.venv` Python running `app.startup` from this repository;
 - the local application port opens.
 
-The script does not ask for, print, or copy a password. Windows starts the task with the password stored when onboarding registered the task. The application process then uses the HIS credential stored for `svc_clinic_tool`.
+The scheduled startup entry point repeats the SID check under the task account, verifies the matching Credential Manager entry, and opens the required HIS tables read-only before importing the application or starting uvicorn. Missing credentials, a wrong task identity, or an unreadable required table stops startup without opening the listener. The start script's success message reports only that the local listener check passed; it does not verify LAN clients, the official Excel template, or SMIS.
+
+LAN client access, the official workbook template, and manual SMIS upload remain external deployment checks. Keep them marked pending until an operator completes those checks on the clinic network with the approved template.
 
 Use either command:
 
@@ -246,7 +273,7 @@ Use a read-only HIS mirror or approved production validation window for the firs
 
 #### Stop and update
 
-`scripts\stop.bat` stops the scheduled task and the matching development process. For a production update:
+`scripts\stop.bat` stops the scheduled task and application processes that use this repository's `.venv` Python. Processes from another checkout are left alone. For a production update:
 
 ```text
 scripts\stop.bat
@@ -267,7 +294,7 @@ The HIS password is fixed by the current clinic policy. This onboarding does not
 
 If the HIS password is changed manually, open a PowerShell window as `svc_clinic_tool`, run `store_his_credential.ps1` again, run `verify_his_access.ps1`, and restart the task.
 
-If the application account password is changed manually, run `onboard_app_host.ps1 -SkipDependencyInstall` again with the new application password so Task Scheduler receives the new password. The script still does not change the HIS host.
+If the application account password is changed manually, run `onboard_app_host.ps1 -PythonPath 'C:\Program Files\Python312\python.exe' -SkipDependencyInstall` again with the new application password so Task Scheduler receives the new password. The script still does not change the HIS host.
 
 #### Credential and share facts
 
@@ -286,9 +313,11 @@ In a workgroup, a local account on one computer does not automatically provide a
 
 ### Official Windows references
 
+If the task starts but no local listener opens, read `C:\clinic-data\app-data\application.log` for a startup preflight failure. Confirm the task account SID, its stored HIS credential, and read access to all three required DBF files. This startup check does not modify HIS.
+
 - [Microsoft: Local User Accounts](https://learn.microsoft.com/en-us/windows/win32/ad/local-user-accounts)
 - [Microsoft: Client Access to Network Resources](https://learn.microsoft.com/en-us/windows/win32/secauthz/client-access-to-network-resources)
-- [Microsoft: `cmdkey`](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/cmdkey)
+- [Microsoft: `CredWriteW`](https://learn.microsoft.com/en-us/windows/win32/api/wincred/nf-wincred-credwritew)
 - [Microsoft: `Register-ScheduledTask`](https://learn.microsoft.com/en-us/powershell/module/scheduledtasks/register-scheduledtask)
 
 ### Manual smoke tests
@@ -344,7 +373,7 @@ Manual checks are limited to the real boundaries:
 2. 確認兩台電腦都屬於 `WORKGROUP`。
 3. 為每台電腦準備本機系統管理員帳號。
 4. 確認 HIS 廠商或 HIS 管理員已提供唯讀帳號及唯讀分享。
-5. 在應用程式主機安裝 Python 3.12。Python 啟動器 `py.exe` 必須可用。
+5. 在應用程式主機安裝共用的 Python 3.12，記下 `python.exe` 路徑。安裝目錄必須包含相符的標準函式庫、`venv` 與 `ensurepip`，不得只位於管理員的個人目錄，且 `svc_clinic_tool` 必須能執行它。onboarding 會在建立帳號、`.venv` 或排程前檢查這些 runtime 檔案。範例：`C:\Program Files\Python312\python.exe`。
 6. 確認應用程式主機可以解析 HIS 電腦名稱，並可連線至 SMB TCP 445 埠。
 7. 將本 repository 複製到應用程式主機的固定路徑。例如 `C:\clinic-antiviral-tool`。
 
@@ -364,7 +393,7 @@ $hisRoot = 'C:\HIS'
 
 Get-CimInstance Win32_ComputerSystem | Select-Object Name, Domain, PartOfDomain
 Get-LocalUser -Name $hisAccount
-Get-LocalGroupMember -Group 'Administrators'
+Get-LocalGroupMember -SID ([System.Security.Principal.SecurityIdentifier]'S-1-5-32-544')
 Get-SmbShare | Where-Object Path -eq $hisRoot
 Get-SmbShareAccess -Name 'HISROOT'
 (Get-Acl -LiteralPath $hisRoot).Access
@@ -397,7 +426,7 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
   -ReadonlyAccount 'svc_clinic_his_ro'
 ```
 
-預期結果是所有必要資料表通過。必要資料表是 `CH012M1.DBF`、`CH011M1.DBF` 及 `PD011M1.DBF`。`H_INV.DBF` 是選用資料表。腳本會檢查根目錄及 `DATA` 目錄。
+預期結果是必要資料表通過。必要資料表是 `CH012M1.DBF`、`CH011M1.DBF` 及 `PD011M1.DBF`。`H_INV.DBF` 是選用資料表。腳本會檢查指定分享、HIS 根目錄、存在時的 `DATA` 目錄及必要資料表的 ACL 中繼資料。它以 SID 解析唯讀帳號與本機群組成員關係，要求明確的 Allow-read，並拒絕匹配到的 Deny 或可寫入權限。若群組成員關係或 ACL 主體無法解析，會停止並要求 HIS 管理員確認。這項有限的中繼資料檢查不代表已證明分享根目錄內每個檔案的權限。
 
 如果驗證失敗，請停止。不要使用自動修復指令。請交由 HIS 管理員檢查失敗項目。
 
@@ -410,33 +439,56 @@ Set-Location C:\clinic-antiviral-tool
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\scripts\onboard_app_host.ps1 `
   -HisPath '\\HIS01\HISROOT' `
-  -ConfigureFirewall
+  -PythonPath 'C:\Program Files\Python312\python.exe'
 ```
 
-此腳本只會在應用程式主機執行以下動作：
+此腳本在應用程式主機依以下順序執行：
 
-- 如果不存在，建立 `APP01\svc_clinic_tool`。
-- 提示輸入應用程式帳號密碼。密碼不會放在命令列。
-- 使用 Python 3.12 建立 `.venv`，並安裝 `requirements.txt`。
-- 建立 `C:\clinic-data\app-data` 與 `C:\clinic-data\uploaded`。
-- 設定 repository 及執行資料夾的應用程式主機權限。
-- 將 `.env` 的 `HIS_MIRROR_PATH` 設為 UNC 路徑。
-- 建立 Windows 啟動時執行的 `ClinicAntiviralTool` Task Scheduler 工作。
-- 如果指定 `-ConfigureFirewall`，建立應用程式埠的 Private 網路設定檔入站防火牆規則。
+- 在修改主機狀態前，檢查指定的共用 Python 3.12 runtime，並確認既有 `.venv` 與它相符。
+- 以安全提示輸入應用程式帳號密碼，密碼不會放在命令列；若 `APP01\svc_clinic_tool` 不存在就建立，否則沿用既有帳號。
+- 確認工作帳號能啟動共用 Python；建立 `C:\clinic-data\app-data`、`C:\clinic-data\uploaded` 與需要的 `.venv`，設定 repository 權限，並確認工作帳號能啟動 venv 的 Python。
+- 除非使用 `-SkipDependencyInstall`，否則安裝 `requirements.txt`。
+- 更新 `.env` 中由腳本管理的設定（包含 `HIS_MIRROR_PATH`），設定執行資料夾權限，並註冊 Windows 啟動時執行的 `ClinicAntiviralTool` Task Scheduler 工作。
+- 只有指定 `-ConfigureFirewall` 時，才建立應用程式埠的 Private 網路設定檔入站防火牆規則。
 
-此腳本不會在 `HIS01` 建立或修改任何設定。此階段輸入的是應用程式帳號密碼，不是 HIS 密碼。
+此腳本不會在 `HIS01` 建立或修改任何設定。此階段輸入的是應用程式帳號密碼，不是 HIS 密碼。既有 `.venv` 若與指定 Python 3.12 的 `pyvenv.cfg` 及實際直譯器版本相符，就會保留；不相符時流程會停止，並指示檢查後只重建 `.venv`，不刪除 SQLite、匯出檔或記錄檔。共用 runtime 與 venv 的工作帳號啟動檢查都通過後，腳本才會更新 `.env` 或排程。執行成功代表應用程式主機建置完成，不代表 HIS 憑證或唯讀存取已驗證；啟動前置檢查會在這些檢查通過前阻擋 listener，排程工作要到第 4 階段才會啟動。
+
+以上範例不會更動防火牆。只有確認應用程式主機目前使用 Private 網路設定檔，而且需要主機防火牆規則時，才在命令中加上 `-ConfigureFirewall`。此開關只會建立 Private 設定檔的應用程式埠入站規則，不提供應用程式登入驗證。
+
+工作帳號啟動 Python 失敗時，錯誤會保留底層原因，並在可取得時顯示數字形式的 Win32 錯誤碼。若要取得診斷資訊而不重跑 onboarding，請在 Windows PowerShell 5.1 中，從失敗時相同的工作目錄執行以下探測。模組路徑須指向已包含此診斷修正的 checkout。帳號須改為發生失敗的本機應用程式工作帳號，Python 路徑須使用當時指定的共用路徑（若失敗的是 venv，則使用其 Python 路徑）：
+
+```powershell
+Import-Module 'C:\clinic-antiviral-tool\scripts\ClinicAntiviral.Onboarding.psm1' -Force
+$accountProbeCredential = Get-Credential -UserName "$env:COMPUTERNAME\svc_clinic_tool" -Message 'Enter the application account password for the Python probe'
+try {
+  Write-Host ("Probe working directory: {0}" -f (Get-Location).Path)
+  Assert-ClinicPythonCanRunAsUser -PythonPath 'C:\Program Files\Python312\python.exe' -Credential $accountProbeCredential
+  Write-Host 'PASS: the application account launched Python 3.12.'
+}
+finally {
+  if ($null -ne $accountProbeCredential) { $accountProbeCredential.Password.Dispose() }
+  Remove-Variable accountProbeCredential -ErrorAction SilentlyContinue
+}
+```
+
+這只檢查 Python 能否啟動及版本，不會建立帳號、重建 `.venv`、更改排程或憑證，也不會存取 HIS。探測通過不代表相依套件匯入或整體 onboarding 已驗收。回報時請提供已遮蔽敏感資訊的錯誤文字與錯誤碼，不要提供密碼。
+
+排程工作使用 Windows 啟動觸發、無執行時間上限，並在失敗時最多依既定政策重啟三次。它先以 `.venv` Python 執行 `app.startup`；該程式會用排程工作帳號檢查 SID、確認 Credential Manager 有 UNC 主機對應的 domain-password 憑證，並以唯讀方式開啟必要 HIS DBF，全部通過後才啟動 uvicorn。尚未儲存憑證或無法讀取 HIS 時，工作會結束且不會開啟應用程式 listener。
+
+重新執行相同命令即可重設路徑或埠號，並須再次提供共用 Python 路徑。既有註解、不相關設定與 `SMIS_TEMPLATE_PATH` 會保留；每個由腳本管理的 key 只更新一筆。若腳本發現設定被串接或不是有效 UTF-8，請停止並依已確認的值重建 `.env`，不要猜測原值或自動拆分修復。
 
 如果離線環境已經安裝 Python 套件，請使用以下版本：
 
 ```powershell
 .\scripts\onboard_app_host.ps1 `
   -HisPath '\\HIS01\HISROOT' `
+  -PythonPath 'C:\Program Files\Python312\python.exe' `
   -SkipDependencyInstall
 ```
 
 #### 為什麼使用 Task Scheduler
 
-本 repository 是以一般 Python 程序啟動 `uvicorn`。真正的 Windows Service 是另一種程式類型，必須連接 Windows Service Control Manager。Task Scheduler 可以在 Windows 啟動時執行一般程序、設定重新啟動規則，並以 `svc_clinic_tool` 執行。這是 v0.1.0 最小的設定方式。
+本 repository 以一般 Python 程序啟動 `uvicorn`。真正的 Windows Service 是另一種程式類型，必須連接 Windows Service Control Manager。Task Scheduler 在 Windows 啟動時以 `svc_clinic_tool` 執行受檢查的啟動入口；入口會先驗證工作身分與必要 HIS 資料表的唯讀存取，再啟動 uvicorn。這是 v0.1.0 最小的設定方式。
 
 ### 第 3 階段：儲存並驗證 HIS 憑證
 
@@ -455,20 +507,21 @@ Set-Location C:\clinic-antiviral-tool
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\scripts\store_his_credential.ps1 `
   -Target 'HIS01' `
-  -RemoteUser 'HIS01\svc_clinic_his_ro'
+  -RemoteUser 'HIS01\svc_clinic_his_ro' `
+  -ExpectedAccount 'APP01\svc_clinic_tool'
 ```
 
-`cmdkey` 會互動式要求輸入 HIS 密碼。密碼不是命令列參數。`-Target` 必須與 UNC 路徑中的主機部分相同。請使用 `HIS01`，不要使用 `\\HIS01\HISROOT`。
+腳本會先以 SID 確認目前帳號正是本機 `APP01\svc_clinic_tool`，再顯示安全密碼提示。密碼會以 domain-password 類型及本機持續性存入該帳號的 Credential Manager。`-Target` 必須完全等於 UNC 路徑的主機部分，不包含分享名稱。若 UNC 使用 IP，`-Target` 請使用該 IP，而 `-RemoteUser` 仍保留 HIS 電腦的真實名稱前綴，例如 `-Target '192.0.2.10' -RemoteUser 'HIS01\svc_clinic_his_ro'`。此處的 `[PASS]` 只表示 Credential Manager 接受寫入，不表示密碼已通過 HIS 存取驗證。
 
 接著執行以下指令：
 
 ```powershell
 .\scripts\verify_his_access.ps1 `
   -HisPath '\\HIS01\HISROOT' `
-  -ExpectedAccount 'svc_clinic_tool'
+  -ExpectedAccount 'APP01\svc_clinic_tool'
 ```
 
-此檢查會列出 UNC 路徑，並以唯讀方式開啟必要 DBF 檔案。它不會寫入測試檔案。驗證通過表示排程工作的身分可以存取必要來源檔案。
+此檢查要求目前帳號 SID 完全符合應用程式帳號，確認該帳號的 Credential Manager 有對應的 domain-password 憑證，列出 UNC 路徑，並以唯讀方式開啟必要 DBF。它不會寫入測試檔案。通過證明憑證項目存在且此帳號在檢查當下能讀取這些必要檔案，不代表整個分享都可讀。
 
 如果驗證失敗，不要啟動排程工作。請檢查電腦名稱、已儲存的憑證、HIS 分享名稱及 SMB 防火牆。不要自動修改 HIS 主機。
 
@@ -493,11 +546,14 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 啟動腳本在啟動排程工作前會檢查：
 
 - 排程工作存在且已啟用。
-- 排程工作以 `svc_clinic_tool` 執行。
-- 排程工作使用本 repository 的 `.venv` Python 及 `uvicorn app.main:app`。
+- 排程主體 SID 符合本機 `svc_clinic_tool`，且登入類型為支援網路存取的 `Password`。
+- 排程工作保留 Windows 啟動觸發、失敗重啟政策及無限執行時間。
+- 排程工作由本 repository 的 `.venv` Python 在正確工作目錄執行 `app.startup`。
 - 本機應用程式埠已開啟。
 
-腳本不會要求、列印或複製密碼。Windows 會使用 onboarding 建立排程工作時儲存的密碼啟動工作。應用程式程序接著使用 `svc_clinic_tool` 的 HIS Credential Manager 憑證。
+排程啟動入口會在工作帳號脈絡再次檢查 SID、確認該帳號 Credential Manager 有對應 UNC 主機的憑證，並在匯入應用程式或啟動 uvicorn 前唯讀開啟必要 HIS 資料表。缺少憑證、工作身分錯誤或資料表不可讀時，listener 不會啟動。啟動腳本的成功訊息只代表本機 listener 檢查通過，不代表 LAN 客戶端、官方 Excel 範本或 SMIS 已驗收。
+
+LAN 客戶端連線、官方 Excel 範本及人工 SMIS 上傳仍是部署時的外部驗收項目。操作人員在診所網路使用核准範本完成檢查前，請持續標記為待驗收。
 
 可以使用以下任一方式啟動：
 
@@ -534,7 +590,7 @@ Invoke-WebRequest -UseBasicParsing 'http://127.0.0.1:8000/doctor'
 
 #### 停止及更新
 
-`scripts\stop.bat` 會停止排程工作及符合條件的開發程序。正式更新使用：
+`scripts\stop.bat` 會停止排程工作及使用本 repository `.venv` Python 的應用程式程序，不會停止其他 checkout 的程序。正式更新使用：
 
 ```text
 scripts\stop.bat
@@ -555,7 +611,7 @@ scripts\start.bat
 
 如果 HIS 密碼由人工變更，請以 `svc_clinic_tool` 開啟 PowerShell，再次執行 `store_his_credential.ps1`、`verify_his_access.ps1`，然後重新啟動排程工作。
 
-如果應用程式帳號密碼由人工變更，請使用新密碼再次執行 `onboard_app_host.ps1 -SkipDependencyInstall`，讓 Task Scheduler 取得新的帳號密碼。此腳本仍不會修改 HIS 主機。
+如果應用程式帳號密碼由人工變更，請帶上 `-PythonPath 'C:\Program Files\Python312\python.exe' -SkipDependencyInstall` 再次執行 `onboard_app_host.ps1`，並輸入新密碼，讓 Task Scheduler 取得新的帳號密碼。此腳本仍不會修改 HIS 主機。
 
 #### 憑證及分享的重點
 
@@ -574,9 +630,11 @@ scripts\start.bat
 
 ### Microsoft Windows 官方參考
 
+如果排程已啟動但本機 listener 沒有開啟，請查看 `C:\clinic-data\app-data\application.log` 的啟動前檢查錯誤。確認排程帳號 SID、該帳號儲存的 HIS 憑證，以及三個必要 DBF 的讀取權限。此啟動檢查不會修改 HIS。
+
 - [Microsoft：Local User Accounts](https://learn.microsoft.com/en-us/windows/win32/ad/local-user-accounts)
 - [Microsoft：Client Access to Network Resources](https://learn.microsoft.com/en-us/windows/win32/secauthz/client-access-to-network-resources)
-- [Microsoft：`cmdkey`](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/cmdkey)
+- [Microsoft：`CredWriteW`](https://learn.microsoft.com/en-us/windows/win32/api/wincred/nf-wincred-credwritew)
 - [Microsoft：`Register-ScheduledTask`](https://learn.microsoft.com/en-us/powershell/module/scheduledtasks/register-scheduledtask)
 
 ### 人工冒煙測試
