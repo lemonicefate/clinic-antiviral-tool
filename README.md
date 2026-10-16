@@ -122,23 +122,21 @@ Set-Location C:\clinic-antiviral-tool
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\scripts\onboard_app_host.ps1 `
   -HisPath '\\HIS01\HISROOT' `
-  -PythonPath 'C:\Program Files\Python312\python.exe' `
-  -ConfigureFirewall
+  -PythonPath 'C:\Program Files\Python312\python.exe'
 ```
 
-The script performs these application-host actions:
+The script follows this order on the application host:
 
-- create `APP01\svc_clinic_tool` if it does not exist;
-- prompt for the application account password without putting it in a command line;
-- check the selected shared Python version before creating the application account, writing `.env`, or registering the task;
-- create `.venv` from that interpreter and install `requirements.txt`;
-- create `C:\clinic-data\app-data` and `C:\clinic-data\uploaded`;
-- set application-host permissions for the repository and runtime directories;
-- set `HIS_MIRROR_PATH` to the UNC path in `.env`;
-- register the `ClinicAntiviralTool` Task Scheduler task for Windows startup;
-- optionally create a Private-profile inbound firewall rule for the app port.
+- before changing host state, check the selected shared Python 3.12 runtime and confirm that any existing `.venv` matches it;
+- securely prompt for the application account password without placing it in a command line, then create `APP01\svc_clinic_tool` if it does not exist or reuse the existing account;
+- verify that the application account can launch the shared Python runtime, create `C:\clinic-data\app-data`, `C:\clinic-data\uploaded`, and `.venv` if needed, grant repository access, and verify that account can launch the venv Python;
+- install `requirements.txt` unless `-SkipDependencyInstall` is used;
+- update the managed `.env` settings, including `HIS_MIRROR_PATH`, grant access to the runtime directories, and register the `ClinicAntiviralTool` Task Scheduler task for Windows startup;
+- create a Private-profile inbound firewall rule for the app port only when `-ConfigureFirewall` is supplied.
 
-The script does not create or modify anything on `HIS01`. The password entered here is the application account password, not the HIS password. An existing `.venv` is kept when its interpreter and `pyvenv.cfg` match the selected Python 3.12. If it does not match, onboarding stops with instructions to review and rebuild only `.venv`; it does not delete SQLite, exports, or logs. The account-context runtime check must also pass before `.env` or the task is updated.
+The script does not create or modify anything on `HIS01`. The password entered here is the application account password, not the HIS password. An existing `.venv` is kept when its interpreter and `pyvenv.cfg` match the selected Python 3.12. If it does not match, onboarding stops with instructions to review and rebuild only `.venv`; it does not delete SQLite, exports, or logs. The shared-runtime and `.venv` account-context launch checks must pass before `.env` or the task is updated. A successful run means the application-host build completed; it does not mean the HIS credential or read-only access has been verified. The startup preflight blocks the listener unless those checks pass, and the task is started only in Phase 4.
+
+The example leaves the firewall unchanged. If the application host's active network profile is confirmed as Private and a host firewall rule is needed, add `-ConfigureFirewall` to this command. The switch creates an inbound rule for the app port on the Private profile only; it does not provide application authentication.
 
 If the account-context Python launch fails, the error includes the underlying cause and the numeric Win32 error code when available. To collect that diagnostic without repeating onboarding, run this probe in Windows PowerShell 5.1 from the same working directory as the failed run. Set the module path to a checkout containing this diagnostic change. Use the failing local application account and the configured shared Python path (or the venv Python path if that is the failing interpreter):
 
@@ -441,23 +439,21 @@ Set-Location C:\clinic-antiviral-tool
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\scripts\onboard_app_host.ps1 `
   -HisPath '\\HIS01\HISROOT' `
-  -PythonPath 'C:\Program Files\Python312\python.exe' `
-  -ConfigureFirewall
+  -PythonPath 'C:\Program Files\Python312\python.exe'
 ```
 
-此腳本只會在應用程式主機執行以下動作：
+此腳本在應用程式主機依以下順序執行：
 
-- 如果不存在，建立 `APP01\svc_clinic_tool`。
-- 提示輸入應用程式帳號密碼。密碼不會放在命令列。
-- 在建立應用程式帳號、寫入 `.env` 或註冊排程前，檢查指定的共用 Python 版本。
-- 使用該直譯器建立 `.venv`，並安裝 `requirements.txt`。
-- 建立 `C:\clinic-data\app-data` 與 `C:\clinic-data\uploaded`。
-- 設定 repository 及執行資料夾的應用程式主機權限。
-- 將 `.env` 的 `HIS_MIRROR_PATH` 設為 UNC 路徑。
-- 建立 Windows 啟動時執行的 `ClinicAntiviralTool` Task Scheduler 工作。
-- 如果指定 `-ConfigureFirewall`，建立應用程式埠的 Private 網路設定檔入站防火牆規則。
+- 在修改主機狀態前，檢查指定的共用 Python 3.12 runtime，並確認既有 `.venv` 與它相符。
+- 以安全提示輸入應用程式帳號密碼，密碼不會放在命令列；若 `APP01\svc_clinic_tool` 不存在就建立，否則沿用既有帳號。
+- 確認工作帳號能啟動共用 Python；建立 `C:\clinic-data\app-data`、`C:\clinic-data\uploaded` 與需要的 `.venv`，設定 repository 權限，並確認工作帳號能啟動 venv 的 Python。
+- 除非使用 `-SkipDependencyInstall`，否則安裝 `requirements.txt`。
+- 更新 `.env` 中由腳本管理的設定（包含 `HIS_MIRROR_PATH`），設定執行資料夾權限，並註冊 Windows 啟動時執行的 `ClinicAntiviralTool` Task Scheduler 工作。
+- 只有指定 `-ConfigureFirewall` 時，才建立應用程式埠的 Private 網路設定檔入站防火牆規則。
 
-此腳本不會在 `HIS01` 建立或修改任何設定。此階段輸入的是應用程式帳號密碼，不是 HIS 密碼。既有 `.venv` 若與指定 Python 3.12 的 `pyvenv.cfg` 及實際直譯器版本相符，就會保留；不相符時流程會停止，並指示檢查後只重建 `.venv`，不刪除 SQLite、匯出檔或記錄檔。更新 `.env` 或排程前，也必須確認工作帳號能執行該 runtime。
+此腳本不會在 `HIS01` 建立或修改任何設定。此階段輸入的是應用程式帳號密碼，不是 HIS 密碼。既有 `.venv` 若與指定 Python 3.12 的 `pyvenv.cfg` 及實際直譯器版本相符，就會保留；不相符時流程會停止，並指示檢查後只重建 `.venv`，不刪除 SQLite、匯出檔或記錄檔。共用 runtime 與 venv 的工作帳號啟動檢查都通過後，腳本才會更新 `.env` 或排程。執行成功代表應用程式主機建置完成，不代表 HIS 憑證或唯讀存取已驗證；啟動前置檢查會在這些檢查通過前阻擋 listener，排程工作要到第 4 階段才會啟動。
+
+以上範例不會更動防火牆。只有確認應用程式主機目前使用 Private 網路設定檔，而且需要主機防火牆規則時，才在命令中加上 `-ConfigureFirewall`。此開關只會建立 Private 設定檔的應用程式埠入站規則，不提供應用程式登入驗證。
 
 工作帳號啟動 Python 失敗時，錯誤會保留底層原因，並在可取得時顯示數字形式的 Win32 錯誤碼。若要取得診斷資訊而不重跑 onboarding，請在 Windows PowerShell 5.1 中，從失敗時相同的工作目錄執行以下探測。模組路徑須指向已包含此診斷修正的 checkout。帳號須改為發生失敗的本機應用程式工作帳號，Python 路徑須使用當時指定的共用路徑（若失敗的是 venv，則使用其 Python 路徑）：
 
